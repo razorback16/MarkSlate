@@ -69,9 +69,10 @@ import { ThemeToggle } from "@/components/tiptap-templates/simple/theme-toggle"
 // --- Lib ---
 import { handleImageUpload, MAX_FILE_SIZE } from "@/lib/tiptap-utils"
 import { useStore } from "@/lib/store"
-import { openFile, saveFile, saveFileAs } from "@/lib/file-ops"
+import { openFile, saveFile, saveFileAs, openFileByPath } from "@/lib/file-ops"
 import { setupNativeMenu, type MenuHandlers } from "@/lib/native-menu"
 import { getCurrentWindow } from "@tauri-apps/api/window"
+import { ask, open } from "@tauri-apps/plugin-dialog"
 
 // --- Markdown ---
 import { Markdown } from "tiptap-markdown"
@@ -79,20 +80,32 @@ import { Markdown } from "tiptap-markdown"
 // --- AI Popup ---
 import { AIPopup } from "@/components/AIPopup"
 
+// --- Sidebar ---
+import { Sidebar } from "@/components/Sidebar"
+import { PanelLeft as PanelLeftIcon } from "lucide-react"
+
 // --- Styles ---
 import "@/components/tiptap-templates/simple/simple-editor.scss"
 
 const MainToolbarContent = ({
   onHighlighterClick,
   onLinkClick,
+  onToggleSidebar,
   isMobile,
 }: {
   onHighlighterClick: () => void
   onLinkClick: () => void
+  onToggleSidebar: () => void
   isMobile: boolean
 }) => {
   return (
     <>
+      <ToolbarGroup>
+        <Button variant="ghost" onClick={onToggleSidebar} aria-label="Toggle sidebar">
+          <PanelLeftIcon className="tiptap-button-icon" />
+        </Button>
+      </ToolbarGroup>
+
       <Spacer />
 
       <ToolbarGroup>
@@ -193,12 +206,13 @@ const MobileToolbarContent = ({
 export function SimpleEditor() {
   const isMobile = useIsBreakpoint()
   const { height } = useWindowSize()
-  const { content, setContent, setSavedContent, currentFilePath, setCurrentFilePath, isDirty, setDirty, setShowSettings, fontSize, lineHeight, lineWidth, paragraphSpacing, paragraphIndent, autoSave } = useStore()
+  const { content, setContent, setSavedContent, currentFilePath, setCurrentFilePath, isDirty, setDirty, setShowSettings, fontSize, lineHeight, lineWidth, paragraphSpacing, paragraphIndent, autoSave, requestedFilePath, setRequestedFilePath, sidebarOpen, setSidebarOpen, setWorkspacePath } = useStore()
   const [mobileView, setMobileView] = useState<"main" | "highlighter" | "link">(
     "main"
   )
   const toolbarRef = useRef<HTMLDivElement>(null)
 
+  const fileLoadingRef = useRef(false)
   const [showAIPopup, setShowAIPopup] = useState(false)
   const [selectionRange, setSelectionRange] = useState<{ from: number; to: number } | null>(null)
   const [popupPosition, setPopupPosition] = useState<{ top: number; left: number }>({ top: 0, left: 0 })
@@ -306,18 +320,23 @@ export function SimpleEditor() {
     setDirty(false)
   }, [editor, setContent, setSavedContent, setCurrentFilePath, setDirty])
 
+  const loadFileIntoEditor = useCallback((filePath: string, fileContent: string) => {
+    if (!editor) return
+    editor.commands.setContent(fileContent)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const serialized = (editor.storage as any).markdown.getMarkdown()
+    setSavedContent(serialized)
+    setContent(serialized)
+    setCurrentFilePath(filePath)
+    setDirty(false)
+  }, [editor, setContent, setSavedContent, setCurrentFilePath, setDirty])
+
   const handleOpenFile = useCallback(async () => {
     const result = await openFile()
-    if (result && editor) {
-      editor.commands.setContent(result.content)
-      // Use Tiptap-serialized markdown as the baseline so comparisons are consistent
-      const serialized = (editor.storage as any).markdown.getMarkdown()
-      setSavedContent(serialized)
-      setContent(serialized)
-      setCurrentFilePath(result.path)
-      setDirty(false)
+    if (result) {
+      loadFileIntoEditor(result.path, result.content)
     }
-  }, [editor, setContent, setSavedContent, setCurrentFilePath, setDirty])
+  }, [loadFileIntoEditor])
 
   const handleSave = useCallback(async () => {
     const markdown = editor ? (editor.storage as any).markdown.getMarkdown() : content
@@ -361,6 +380,18 @@ export function SimpleEditor() {
     document.documentElement.classList.toggle("dark")
   }, [])
 
+  const handleOpenFolder = useCallback(async () => {
+    const selected = await open({ directory: true, recursive: true })
+    if (selected) {
+      setWorkspacePath(selected)
+      setSidebarOpen(true)
+    }
+  }, [setWorkspacePath, setSidebarOpen])
+
+  const handleToggleSidebar = useCallback(() => {
+    setSidebarOpen(!sidebarOpen)
+  }, [sidebarOpen, setSidebarOpen])
+
   const menuHandlersRef = useRef<MenuHandlers>({
     onNew: handleNewFile,
     onOpen: handleOpenFile,
@@ -369,6 +400,8 @@ export function SimpleEditor() {
     onCloseFile: handleCloseFile,
     onSettings: () => setShowSettings(true),
     onToggleDarkMode: handleToggleDarkMode,
+    onOpenFolder: handleOpenFolder,
+    onToggleSidebar: handleToggleSidebar,
   })
 
   useEffect(() => {
@@ -380,8 +413,10 @@ export function SimpleEditor() {
       onCloseFile: handleCloseFile,
       onSettings: () => setShowSettings(true),
       onToggleDarkMode: handleToggleDarkMode,
+      onOpenFolder: handleOpenFolder,
+      onToggleSidebar: handleToggleSidebar,
     }
-  }, [handleNewFile, handleOpenFile, handleSave, handleSaveAs, handleCloseFile, handleToggleDarkMode, setShowSettings, setCurrentFilePath, setContent, setDirty])
+  }, [handleNewFile, handleOpenFile, handleSave, handleSaveAs, handleCloseFile, handleToggleDarkMode, setShowSettings, setCurrentFilePath, setContent, setDirty, handleOpenFolder, handleToggleSidebar])
 
   useEffect(() => {
     setupNativeMenu({
@@ -392,6 +427,8 @@ export function SimpleEditor() {
       onCloseFile: () => menuHandlersRef.current.onCloseFile(),
       onSettings: () => menuHandlersRef.current.onSettings(),
       onToggleDarkMode: () => menuHandlersRef.current.onToggleDarkMode(),
+      onOpenFolder: () => menuHandlersRef.current.onOpenFolder(),
+      onToggleSidebar: () => menuHandlersRef.current.onToggleSidebar(),
     })
   }, [])
 
@@ -416,6 +453,31 @@ export function SimpleEditor() {
     }, 1000)
     return () => clearTimeout(timer)
   }, [autoSave, isDirty, currentFilePath, editor, setSavedContent, setDirty])
+
+  useEffect(() => {
+    if (!requestedFilePath || !editor || fileLoadingRef.current) return
+    const pathToOpen = requestedFilePath
+    setRequestedFilePath(null)
+    fileLoadingRef.current = true
+    const loadFile = async () => {
+      try {
+        if (isDirty) {
+          const confirmed = await ask("You have unsaved changes. Discard them?", {
+            title: "Unsaved Changes",
+            kind: "warning",
+          })
+          if (!confirmed) return
+        }
+        const result = await openFileByPath(pathToOpen)
+        loadFileIntoEditor(result.path, result.content)
+      } catch (err) {
+        console.error("Failed to open file:", err)
+      } finally {
+        fileLoadingRef.current = false
+      }
+    }
+    loadFile()
+  }, [requestedFilePath, editor, isDirty, setRequestedFilePath, loadFileIntoEditor])
 
   useEffect(() => {
     if (!editor) return
@@ -447,50 +509,54 @@ export function SimpleEditor() {
 
   return (
     <div className="simple-editor-wrapper">
-      <EditorContext.Provider value={{ editor }}>
-        <Toolbar
-          ref={toolbarRef}
-          style={{
-            ...(isMobile
-              ? {
-                  bottom: `calc(100% - ${height - rect.y}px)`,
-                }
-              : {}),
-          }}
-        >
-          {mobileView === "main" ? (
-            <MainToolbarContent
-              onHighlighterClick={() => setMobileView("highlighter")}
-              onLinkClick={() => setMobileView("link")}
-              isMobile={isMobile}
-            />
-          ) : (
-            <MobileToolbarContent
-              type={mobileView === "highlighter" ? "highlighter" : "link"}
-              onBack={() => setMobileView("main")}
-            />
-          )}
-        </Toolbar>
+      <Sidebar />
+      <div className="simple-editor-main">
+        <EditorContext.Provider value={{ editor }}>
+          <Toolbar
+            ref={toolbarRef}
+            style={{
+              ...(isMobile
+                ? {
+                    bottom: `calc(100% - ${height - rect.y}px)`,
+                  }
+                : {}),
+            }}
+          >
+            {mobileView === "main" ? (
+              <MainToolbarContent
+                onHighlighterClick={() => setMobileView("highlighter")}
+                onLinkClick={() => setMobileView("link")}
+                onToggleSidebar={handleToggleSidebar}
+                isMobile={isMobile}
+              />
+            ) : (
+              <MobileToolbarContent
+                type={mobileView === "highlighter" ? "highlighter" : "link"}
+                onBack={() => setMobileView("main")}
+              />
+            )}
+          </Toolbar>
 
-        <EditorContent
-          editor={editor}
-          role="presentation"
-          className="simple-editor-content"
-        />
-      </EditorContext.Provider>
+          <EditorContent
+            editor={editor}
+            role="presentation"
+            className="simple-editor-content"
+          />
+        </EditorContext.Provider>
 
-      {showAIPopup && selectionRange && (
-        <AIPopup
-          position={popupPosition}
-          selectedText={getSelectedText()}
-          fullContext={getFullContext()}
-          onComplete={handleAIComplete}
-          onClose={() => {
-            setShowAIPopup(false)
-            setSelectionRange(null)
-          }}
-        />
-      )}
+        {showAIPopup && selectionRange && (
+          <AIPopup
+            position={popupPosition}
+            selectedText={getSelectedText()}
+            fullContext={getFullContext()}
+            onComplete={handleAIComplete}
+            onClose={() => {
+              setShowAIPopup(false)
+              setSelectionRange(null)
+            }}
+          />
+        )}
+      </div>
     </div>
   )
 }

@@ -28,3 +28,8 @@ export async function saveFileAs(content: string): Promise<string | null> {
   await writeTextFile(path, content);
   return path;
 }
+
+export async function openFileByPath(path: string): Promise<{ path: string; content: string }> {
+  const content = await readTextFile(path);
+  return { path, content };
+}

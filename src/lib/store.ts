@@ -7,6 +7,7 @@ const EDITOR_DEFAULTS = {
   paragraphSpacing: 0,
   paragraphIndent: 0,
   autoSave: false,
+  sidebarOpen: false,
 };
 
 function loadEditorSettings() {
@@ -52,6 +53,12 @@ interface EditorStore {
   setParagraphIndent: (indent: number) => void;
   autoSave: boolean;
   setAutoSave: (autoSave: boolean) => void;
+  workspacePath: string | null;
+  setWorkspacePath: (path: string | null) => void;
+  sidebarOpen: boolean;
+  setSidebarOpen: (open: boolean) => void;
+  requestedFilePath: string | null;
+  setRequestedFilePath: (path: string | null) => void;
   resetEditorDefaults: () => void;
 }
 
@@ -67,6 +74,7 @@ export const useStore = create<EditorStore>((set, get) => {
       paragraphSpacing: s.paragraphSpacing,
       paragraphIndent: s.paragraphIndent,
       autoSave: s.autoSave,
+      sidebarOpen: s.sidebarOpen,
       ...patch,
     });
   };
@@ -127,6 +135,22 @@ export const useStore = create<EditorStore>((set, get) => {
       set({ autoSave });
       persistSettings({ autoSave });
     },
+    workspacePath: null,
+    setWorkspacePath: (workspacePath) => {
+      set({ workspacePath });
+      if (workspacePath) {
+        localStorage.setItem("markslate-workspace-path", workspacePath);
+      } else {
+        localStorage.removeItem("markslate-workspace-path");
+      }
+    },
+    sidebarOpen: false,
+    setSidebarOpen: (sidebarOpen) => {
+      set({ sidebarOpen });
+      persistSettings({ sidebarOpen });
+    },
+    requestedFilePath: null,
+    setRequestedFilePath: (requestedFilePath) => set({ requestedFilePath }),
     resetEditorDefaults: () => {
       set({ ...EDITOR_DEFAULTS });
       saveEditorSettings({ ...EDITOR_DEFAULTS });

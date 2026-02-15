@@ -6,6 +6,8 @@ export interface MenuHandlers {
   onSave: () => void;
   onSaveAs: () => void;
   onCloseFile: () => void;
+  onOpenFolder: () => void;
+  onToggleSidebar: () => void;
   onSettings: () => void;
   onToggleDarkMode: () => void;
 }
@@ -51,6 +53,12 @@ export async function setupNativeMenu(handlers: MenuHandlers) {
         accelerator: "CmdOrCtrl+O",
         action: () => handlers.onOpen(),
       }),
+      await MenuItem.new({
+        id: "open-folder",
+        text: "Open Folder...",
+        accelerator: "CmdOrCtrl+Shift+O",
+        action: () => handlers.onOpenFolder(),
+      }),
       await PredefinedMenuItem.new({ item: "Separator" }),
       await MenuItem.new({
         id: "save",
@@ -74,6 +82,18 @@ export async function setupNativeMenu(handlers: MenuHandlers) {
     ],
   });
 
+  const viewSubmenu = await Submenu.new({
+    text: "View",
+    items: [
+      await MenuItem.new({
+        id: "toggle-sidebar",
+        text: "Toggle Sidebar",
+        accelerator: "CmdOrCtrl+\\",
+        action: () => handlers.onToggleSidebar(),
+      }),
+    ],
+  });
+
   const editSubmenu = await Submenu.new({
     text: "Edit",
     items: [
@@ -88,7 +108,7 @@ export async function setupNativeMenu(handlers: MenuHandlers) {
   });
 
   const menu = await Menu.new({
-    items: [appSubmenu, fileSubmenu, editSubmenu],
+    items: [appSubmenu, fileSubmenu, viewSubmenu, editSubmenu],
   });
 
   await menu.setAsAppMenu();

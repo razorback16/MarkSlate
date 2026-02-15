@@ -11,6 +11,9 @@
     "fs:allow-read-text-file",
     "fs:allow-write-text-file",
     "core:menu:default",
-    "core:window:allow-set-title"
+    "core:window:allow-set-title",
+    "fs:allow-read-dir",
+    "fs:allow-stat",
+    "fs:allow-exists"
   ]
 }
