@@ -1,3 +1,5 @@
+use tauri::Manager;
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -6,11 +8,19 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png")).expect("failed to load icon");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![greet])
+        .setup(move |app| {
+            if let Some(window) = app.webview_windows().values().next() {
+                let _ = window.set_icon(icon);
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
