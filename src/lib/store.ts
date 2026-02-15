@@ -34,8 +34,10 @@ interface EditorStore {
   setAIProcessing: (processing: boolean) => void;
   aiError: string | null;
   setAIError: (error: string | null) => void;
-  apiKey: string;
-  setApiKey: (key: string) => void;
+  claudePath: string | null;
+  setClaudePath: (path: string | null) => void;
+  showClaudeNotFound: boolean;
+  setShowClaudeNotFound: (show: boolean) => void;
   showSettings: boolean;
   setShowSettings: (show: boolean) => void;
   fontSize: number;
@@ -82,11 +84,17 @@ export const useStore = create<EditorStore>((set, get) => {
     setAIProcessing: (isAIProcessing) => set({ isAIProcessing }),
     aiError: null,
     setAIError: (aiError) => set({ aiError }),
-    apiKey: localStorage.getItem("markslate-api-key") || "",
-    setApiKey: (apiKey) => {
-      localStorage.setItem("markslate-api-key", apiKey);
-      set({ apiKey });
+    claudePath: (() => { try { return localStorage.getItem("markslate-claude-path"); } catch { return null; } })(),
+    setClaudePath: (claudePath) => {
+      set({ claudePath });
+      if (claudePath) {
+        localStorage.setItem("markslate-claude-path", claudePath);
+      } else {
+        localStorage.removeItem("markslate-claude-path");
+      }
     },
+    showClaudeNotFound: false,
+    setShowClaudeNotFound: (showClaudeNotFound) => set({ showClaudeNotFound }),
     showSettings: false,
     setShowSettings: (showSettings) => set({ showSettings }),
     fontSize: initialSettings.fontSize,

@@ -14,7 +14,7 @@ export function AIPopup({ position, selectedText, fullContext, onComplete, onClo
   const [instruction, setInstruction] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
-  const { isAIProcessing, setAIProcessing, aiError, setAIError, apiKey } = useStore();
+  const { isAIProcessing, setAIProcessing, aiError, setAIError, claudePath } = useStore();
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -39,7 +39,7 @@ export function AIPopup({ position, selectedText, fullContext, onComplete, onClo
         selectedText,
         instruction: instruction.trim(),
         fullContext,
-        apiKey: apiKey || undefined,
+        claudePath,
       });
       onComplete(result);
     } catch (err) {

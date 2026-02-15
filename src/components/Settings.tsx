@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
+import { detectClaudePath, validateClaudePath } from "../lib/ai";
 import { useStore } from "../lib/store";
 
 function SliderRow({
@@ -56,7 +58,7 @@ function SliderRow({
 
 export function Settings() {
   const {
-    apiKey, setApiKey, setShowSettings,
+    setShowSettings,
     fontSize, setFontSize,
     lineHeight, setLineHeight,
     lineWidth, setLineWidth,
@@ -64,13 +66,55 @@ export function Settings() {
     paragraphIndent, setParagraphIndent,
     autoSave, setAutoSave,
     resetEditorDefaults,
+    claudePath, setClaudePath,
   } = useStore();
-  const [key, setKey] = useState(apiKey);
-  const [showKey, setShowKey] = useState(false);
 
-  const handleSave = () => {
-    setApiKey(key);
-    setShowSettings(false);
+  const [pathInput, setPathInput] = useState(claudePath || "");
+  const [pathStatus, setPathStatus] = useState<"idle" | "valid" | "invalid" | "detecting">(
+    claudePath ? "valid" : "idle"
+  );
+
+  const handleBrowse = async () => {
+    const selected = await open({ multiple: false });
+    if (selected) {
+      const filePath = typeof selected === "string" ? selected : String(selected);
+      setPathInput(filePath);
+      const valid = await validateClaudePath(filePath);
+      if (valid) {
+        setClaudePath(filePath);
+        setPathStatus("valid");
+      } else {
+        setPathStatus("invalid");
+      }
+    }
+  };
+
+  const handleAutoDetect = async () => {
+    setPathStatus("detecting");
+    try {
+      const detected = await detectClaudePath();
+      setPathInput(detected);
+      setClaudePath(detected);
+      setPathStatus("valid");
+    } catch {
+      setPathStatus("invalid");
+    }
+  };
+
+  const handlePathChange = async (value: string) => {
+    setPathInput(value);
+    if (!value.trim()) {
+      setClaudePath(null);
+      setPathStatus("idle");
+      return;
+    }
+    const valid = await validateClaudePath(value);
+    if (valid) {
+      setClaudePath(value);
+      setPathStatus("valid");
+    } else {
+      setPathStatus("invalid");
+    }
   };
 
   return (
@@ -125,56 +169,53 @@ export function Settings() {
 
           <hr className="border-gray-100 dark:border-[var(--tt-gray-dark-200)]" />
 
-          {/* AI Configuration Section */}
+          {/* Claude CLI Section */}
           <div>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-[var(--tt-gray-dark-400)] mb-1">
-              AI
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-[var(--tt-gray-dark-400)] mb-3">
+              Claude CLI
             </h3>
-            <p className="text-[12px] text-gray-400 dark:text-[var(--tt-gray-dark-400)] mb-3">
-              Anthropic API key or <code className="text-[11px] bg-gray-100 dark:bg-[var(--tt-gray-dark-200)] px-1 py-0.5 rounded font-mono">ANTHROPIC_API_KEY</code> env var.
-            </p>
-
-            <div className="relative">
+            <div className="space-y-2">
               <input
-                type={showKey ? "text" : "password"}
-                value={key}
-                onChange={(e) => setKey(e.target.value)}
-                placeholder="sk-ant-..."
-                className="w-full border border-gray-200 dark:border-[var(--tt-gray-dark-300)] dark:bg-[var(--tt-gray-dark-100)] dark:text-[var(--tt-gray-dark-900)] rounded-lg px-3 py-2 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400 transition-shadow"
+                type="text"
+                value={pathInput}
+                onChange={(e) => handlePathChange(e.target.value)}
+                placeholder="Path to claude binary..."
+                className="w-full text-[13px] border border-gray-200 dark:border-[var(--tt-gray-dark-300)] dark:bg-[var(--tt-gray-dark-100)] dark:text-[var(--tt-gray-dark-900)] dark:placeholder-[var(--tt-gray-dark-400)] rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400 transition-shadow font-mono text-[12px]"
               />
-              <button
-                type="button"
-                onClick={() => setShowKey(!showKey)}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-500 dark:text-[var(--tt-gray-dark-400)] dark:hover:text-[var(--tt-gray-dark-700)] transition-colors"
-              >
-                {showKey ? (
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
-                  </svg>
-                ) : (
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                  </svg>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleBrowse}
+                  className="text-[12px] px-3 py-1 rounded-md bg-gray-100 hover:bg-gray-200 dark:bg-[var(--tt-gray-dark-200)] dark:hover:bg-[var(--tt-gray-dark-300)] text-gray-600 dark:text-[var(--tt-gray-dark-600)] transition-colors"
+                >
+                  Browse
+                </button>
+                <button
+                  onClick={handleAutoDetect}
+                  disabled={pathStatus === "detecting"}
+                  className="text-[12px] px-3 py-1 rounded-md bg-gray-100 hover:bg-gray-200 dark:bg-[var(--tt-gray-dark-200)] dark:hover:bg-[var(--tt-gray-dark-300)] text-gray-600 dark:text-[var(--tt-gray-dark-600)] transition-colors disabled:opacity-50"
+                >
+                  {pathStatus === "detecting" ? "Detecting..." : "Auto-detect"}
+                </button>
+                {pathStatus === "valid" && (
+                  <span className="text-[11px] text-green-500 flex items-center gap-1">
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                    Found
+                  </span>
                 )}
-              </button>
-            </div>
-
-            <div className="flex justify-end gap-2 mt-3">
-              <button
-                onClick={() => setShowSettings(false)}
-                className="px-3 py-1.5 text-[13px] text-gray-500 hover:text-gray-700 rounded-md hover:bg-gray-100 dark:text-[var(--tt-gray-dark-500)] dark:hover:text-[var(--tt-gray-dark-700)] dark:hover:bg-[var(--tt-gray-dark-200)] transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSave}
-                className="px-3 py-1.5 text-[13px] bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors"
-              >
-                Save Key
-              </button>
+                {pathStatus === "invalid" && (
+                  <span className="text-[11px] text-red-500 flex items-center gap-1">
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                    Not found
+                  </span>
+                )}
+              </div>
             </div>
           </div>
+
         </div>
       </div>
     </div>

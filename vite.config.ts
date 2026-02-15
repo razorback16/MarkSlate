@@ -1,7 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import { aiPlugin } from "./server/ai-plugin";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,7 +9,11 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  plugins: [react(), tailwindcss(), aiPlugin()],
+  plugins: [react(), tailwindcss()],
+  build: {
+    // Tauri loads assets from disk, not over network — chunk size doesn't matter
+    chunkSizeWarningLimit: 1500,
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

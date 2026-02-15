@@ -1,25 +1,28 @@
+import { invoke } from "@tauri-apps/api/core";
+
 export async function modifyTextWithAI({
   selectedText,
   instruction,
   fullContext,
-  apiKey,
+  claudePath,
 }: {
   selectedText: string;
   instruction: string;
   fullContext: string;
-  apiKey?: string;
+  claudePath?: string | null;
 }): Promise<string> {
-  const res = await fetch("/api/ai", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ selectedText, instruction, fullContext, apiKey }),
+  return await invoke<string>("modify_text_with_ai", {
+    selectedText,
+    instruction,
+    fullContext,
+    claudePath: claudePath || null,
   });
+}
 
-  const data = await res.json();
+export async function detectClaudePath(): Promise<string> {
+  return await invoke<string>("detect_claude_path");
+}
 
-  if (!res.ok) {
-    throw new Error(data.error || "AI request failed");
-  }
-
-  return data.result;
+export async function validateClaudePath(path: string): Promise<boolean> {
+  return await invoke<boolean>("validate_claude_path", { path });
 }
