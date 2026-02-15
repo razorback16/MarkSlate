@@ -62,6 +62,7 @@ export function Settings() {
     lineWidth, setLineWidth,
     paragraphSpacing, setParagraphSpacing,
     paragraphIndent, setParagraphIndent,
+    autoSave, setAutoSave,
     resetEditorDefaults,
   } = useStore();
   const [key, setKey] = useState(apiKey);
@@ -100,6 +101,17 @@ export function Settings() {
               <SliderRow label="Line Width" value={lineWidth} min={20} max={120} step={1} unit="em" onChange={setLineWidth} />
               <SliderRow label="Spacing" value={paragraphSpacing} min={0} max={3} step={0.25} unit="em" onChange={setParagraphSpacing} />
               <SliderRow label="Indent" value={paragraphIndent} min={0} max={3} step={0.25} unit="em" onChange={setParagraphIndent} />
+            </div>
+            <div className="flex items-center justify-between mt-3">
+              <span className="text-[13px] text-gray-500 dark:text-[var(--tt-gray-dark-500)] select-none">Auto Save</span>
+              <button
+                role="switch"
+                aria-checked={autoSave}
+                onClick={() => setAutoSave(!autoSave)}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${autoSave ? "bg-blue-500" : "bg-gray-300 dark:bg-[var(--tt-gray-dark-300)]"}`}
+              >
+                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${autoSave ? "translate-x-[18px]" : "translate-x-[3px]"}`} />
+              </button>
             </div>
             <div className="flex justify-end mt-3">
               <button

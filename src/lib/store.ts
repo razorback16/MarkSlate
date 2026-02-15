@@ -6,6 +6,7 @@ const EDITOR_DEFAULTS = {
   lineWidth: 64,
   paragraphSpacing: 0,
   paragraphIndent: 0,
+  autoSave: false,
 };
 
 function loadEditorSettings() {
@@ -23,6 +24,8 @@ function saveEditorSettings(settings: typeof EDITOR_DEFAULTS) {
 interface EditorStore {
   content: string;
   setContent: (content: string) => void;
+  savedContent: string;
+  setSavedContent: (content: string) => void;
   currentFilePath: string | null;
   setCurrentFilePath: (path: string | null) => void;
   isDirty: boolean;
@@ -45,15 +48,32 @@ interface EditorStore {
   setParagraphSpacing: (spacing: number) => void;
   paragraphIndent: number;
   setParagraphIndent: (indent: number) => void;
+  autoSave: boolean;
+  setAutoSave: (autoSave: boolean) => void;
   resetEditorDefaults: () => void;
 }
 
 export const useStore = create<EditorStore>((set, get) => {
   const initialSettings = loadEditorSettings();
 
+  const persistSettings = (patch: Partial<typeof EDITOR_DEFAULTS>) => {
+    const s = get();
+    saveEditorSettings({
+      fontSize: s.fontSize,
+      lineHeight: s.lineHeight,
+      lineWidth: s.lineWidth,
+      paragraphSpacing: s.paragraphSpacing,
+      paragraphIndent: s.paragraphIndent,
+      autoSave: s.autoSave,
+      ...patch,
+    });
+  };
+
   return {
     content: "# Welcome\n\nStart typing your markdown here...",
-    setContent: (content) => set({ content, isDirty: true }),
+    savedContent: "# Welcome\n\nStart typing your markdown here...",
+    setContent: (content) => set({ content, isDirty: content !== get().savedContent }),
+    setSavedContent: (savedContent) => set({ savedContent }),
     currentFilePath: null,
     setCurrentFilePath: (currentFilePath) => set({ currentFilePath }),
     isDirty: false,
@@ -72,32 +92,32 @@ export const useStore = create<EditorStore>((set, get) => {
     fontSize: initialSettings.fontSize,
     setFontSize: (fontSize) => {
       set({ fontSize });
-      const s = get();
-      saveEditorSettings({ fontSize, lineHeight: s.lineHeight, lineWidth: s.lineWidth, paragraphSpacing: s.paragraphSpacing, paragraphIndent: s.paragraphIndent });
+      persistSettings({ fontSize });
     },
     lineHeight: initialSettings.lineHeight,
     setLineHeight: (lineHeight) => {
       set({ lineHeight });
-      const s = get();
-      saveEditorSettings({ fontSize: s.fontSize, lineHeight, lineWidth: s.lineWidth, paragraphSpacing: s.paragraphSpacing, paragraphIndent: s.paragraphIndent });
+      persistSettings({ lineHeight });
     },
     lineWidth: initialSettings.lineWidth,
     setLineWidth: (lineWidth) => {
       set({ lineWidth });
-      const s = get();
-      saveEditorSettings({ fontSize: s.fontSize, lineHeight: s.lineHeight, lineWidth, paragraphSpacing: s.paragraphSpacing, paragraphIndent: s.paragraphIndent });
+      persistSettings({ lineWidth });
     },
     paragraphSpacing: initialSettings.paragraphSpacing,
     setParagraphSpacing: (paragraphSpacing) => {
       set({ paragraphSpacing });
-      const s = get();
-      saveEditorSettings({ fontSize: s.fontSize, lineHeight: s.lineHeight, lineWidth: s.lineWidth, paragraphSpacing, paragraphIndent: s.paragraphIndent });
+      persistSettings({ paragraphSpacing });
     },
     paragraphIndent: initialSettings.paragraphIndent,
     setParagraphIndent: (paragraphIndent) => {
       set({ paragraphIndent });
-      const s = get();
-      saveEditorSettings({ fontSize: s.fontSize, lineHeight: s.lineHeight, lineWidth: s.lineWidth, paragraphSpacing: s.paragraphSpacing, paragraphIndent });
+      persistSettings({ paragraphIndent });
+    },
+    autoSave: initialSettings.autoSave,
+    setAutoSave: (autoSave) => {
+      set({ autoSave });
+      persistSettings({ autoSave });
     },
     resetEditorDefaults: () => {
       set({ ...EDITOR_DEFAULTS });

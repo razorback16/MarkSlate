@@ -32,7 +32,7 @@ export async function setupNativeMenu(handlers: MenuHandlers) {
         action: () => handlers.onToggleDarkMode(),
       }),
       await PredefinedMenuItem.new({ item: "Separator" }),
-      await PredefinedMenuItem.new({ item: "Quit" }),
+      await PredefinedMenuItem.new({ item: "Quit", text: "Quit" }),
     ],
   });
 

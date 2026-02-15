@@ -12,7 +12,7 @@ interface AIPopupProps {
 
 export function AIPopup({ position, selectedText, fullContext, onComplete, onClose }: AIPopupProps) {
   const [instruction, setInstruction] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
   const { isAIProcessing, setAIProcessing, aiError, setAIError, apiKey } = useStore();
 
@@ -72,22 +72,31 @@ export function AIPopup({ position, selectedText, fullContext, onComplete, onClo
 
       <div className="px-3.5 pb-3.5">
         <div className="relative">
-          <input
+          <textarea
             ref={inputRef}
-            type="text"
             value={instruction}
             onChange={(e) => setInstruction(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") handleSubmit();
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleSubmit();
+              }
             }}
             placeholder="e.g., make this more concise..."
-            className="w-full text-[13px] border border-gray-200 dark:border-[var(--tt-gray-dark-300)] dark:bg-[var(--tt-gray-dark-100)] dark:text-[var(--tt-gray-dark-900)] dark:placeholder-[var(--tt-gray-dark-400)] rounded-lg px-3 py-2 pr-9 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400 transition-shadow"
+            rows={1}
+            className="w-full text-[13px] leading-[20px] border border-gray-200 dark:border-[var(--tt-gray-dark-300)] dark:bg-[var(--tt-gray-dark-100)] dark:text-[var(--tt-gray-dark-900)] dark:placeholder-[var(--tt-gray-dark-400)] rounded-lg px-3 py-2 pr-9 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400 transition-shadow resize-none overflow-hidden"
+            style={{ minHeight: "36px", height: "36px" }}
             disabled={isAIProcessing}
+            onInput={(e) => {
+              const target = e.target as HTMLTextAreaElement;
+              target.style.height = "36px";
+              target.style.height = Math.max(36, target.scrollHeight) + "px";
+            }}
           />
           <button
             onClick={handleSubmit}
             disabled={isAIProcessing || !instruction.trim()}
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 rounded-md text-gray-300 hover:text-blue-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="absolute right-1.5 bottom-[12px] p-1 rounded-md text-gray-300 hover:text-blue-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {isAIProcessing ? (
               <svg className="animate-spin h-4 w-4 text-blue-500" viewBox="0 0 24 24">

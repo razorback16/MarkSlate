@@ -71,6 +71,7 @@ import { handleImageUpload, MAX_FILE_SIZE } from "@/lib/tiptap-utils"
 import { useStore } from "@/lib/store"
 import { openFile, saveFile, saveFileAs } from "@/lib/file-ops"
 import { setupNativeMenu, type MenuHandlers } from "@/lib/native-menu"
+import { getCurrentWindow } from "@tauri-apps/api/window"
 
 // --- Markdown ---
 import { Markdown } from "tiptap-markdown"
@@ -192,7 +193,7 @@ const MobileToolbarContent = ({
 export function SimpleEditor() {
   const isMobile = useIsBreakpoint()
   const { height } = useWindowSize()
-  const { content, setContent, currentFilePath, setCurrentFilePath, isDirty, setDirty, setShowSettings, fontSize, lineHeight, lineWidth, paragraphSpacing, paragraphIndent } = useStore()
+  const { content, setContent, setSavedContent, currentFilePath, setCurrentFilePath, isDirty, setDirty, setShowSettings, fontSize, lineHeight, lineWidth, paragraphSpacing, paragraphIndent, autoSave } = useStore()
   const [mobileView, setMobileView] = useState<"main" | "highlighter" | "link">(
     "main"
   )
@@ -294,55 +295,67 @@ export function SimpleEditor() {
   }, [editor])
 
   const handleNewFile = useCallback(() => {
+    const newContent = "# New Document\n\nStart typing..."
     if (editor) {
-      editor.commands.setContent("# New Document\n\nStart typing...")
-      setContent("# New Document\n\nStart typing...")
+      editor.commands.setContent(newContent)
+      const serialized = (editor.storage as any).markdown.getMarkdown()
+      setSavedContent(serialized)
+      setContent(serialized)
     }
     setCurrentFilePath(null)
     setDirty(false)
-  }, [editor, setContent, setCurrentFilePath, setDirty])
+  }, [editor, setContent, setSavedContent, setCurrentFilePath, setDirty])
 
   const handleOpenFile = useCallback(async () => {
     const result = await openFile()
     if (result && editor) {
       editor.commands.setContent(result.content)
-      setContent(result.content)
+      // Use Tiptap-serialized markdown as the baseline so comparisons are consistent
+      const serialized = (editor.storage as any).markdown.getMarkdown()
+      setSavedContent(serialized)
+      setContent(serialized)
       setCurrentFilePath(result.path)
       setDirty(false)
     }
-  }, [editor, setContent, setCurrentFilePath, setDirty])
+  }, [editor, setContent, setSavedContent, setCurrentFilePath, setDirty])
 
   const handleSave = useCallback(async () => {
     const markdown = editor ? (editor.storage as any).markdown.getMarkdown() : content
     if (currentFilePath) {
       await saveFile(currentFilePath, markdown)
+      setSavedContent(markdown)
       setDirty(false)
     } else {
       const path = await saveFileAs(markdown)
       if (path) {
+        setSavedContent(markdown)
         setCurrentFilePath(path)
         setDirty(false)
       }
     }
-  }, [editor, content, currentFilePath, setCurrentFilePath, setDirty])
+  }, [editor, content, currentFilePath, setSavedContent, setCurrentFilePath, setDirty])
 
   const handleSaveAs = useCallback(async () => {
     const markdown = editor ? (editor.storage as any).markdown.getMarkdown() : content
     const path = await saveFileAs(markdown)
     if (path) {
+      setSavedContent(markdown)
       setCurrentFilePath(path)
       setDirty(false)
     }
-  }, [editor, content, setCurrentFilePath, setDirty])
+  }, [editor, content, setSavedContent, setCurrentFilePath, setDirty])
 
   const handleCloseFile = useCallback(() => {
+    const welcomeContent = "# Welcome\n\nStart typing your markdown here..."
     if (editor) {
-      editor.commands.setContent("# Welcome\n\nStart typing your markdown here...")
-      setContent("# Welcome\n\nStart typing your markdown here...")
+      editor.commands.setContent(welcomeContent)
+      const serialized = (editor.storage as any).markdown.getMarkdown()
+      setSavedContent(serialized)
+      setContent(serialized)
     }
     setCurrentFilePath(null)
     setDirty(false)
-  }, [editor, setContent, setCurrentFilePath, setDirty])
+  }, [editor, setContent, setSavedContent, setCurrentFilePath, setDirty])
 
   const handleToggleDarkMode = useCallback(() => {
     document.documentElement.classList.toggle("dark")
@@ -382,12 +395,27 @@ export function SimpleEditor() {
     })
   }, [])
 
-  // Update document title based on file state
+  // Update window title based on file state
   useEffect(() => {
     const filename = currentFilePath ? currentFilePath.split("/").pop() : "Untitled"
     const prefix = isDirty ? "* " : ""
-    document.title = `${prefix}${filename} - MarkSlate`
+    const title = `${prefix}${filename} - MarkSlate`
+    document.title = title
+    getCurrentWindow().setTitle(title)
   }, [currentFilePath, isDirty])
+
+  // Auto-save: debounce 1s after changes when enabled and file has a path
+  useEffect(() => {
+    if (!autoSave || !isDirty || !currentFilePath || !editor) return
+    const timer = setTimeout(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const markdown = (editor.storage as any).markdown.getMarkdown()
+      await saveFile(currentFilePath, markdown)
+      setSavedContent(markdown)
+      setDirty(false)
+    }, 1000)
+    return () => clearTimeout(timer)
+  }, [autoSave, isDirty, currentFilePath, editor, setSavedContent, setDirty])
 
   useEffect(() => {
     if (!editor) return
