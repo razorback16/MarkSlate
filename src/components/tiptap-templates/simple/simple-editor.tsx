@@ -81,13 +81,14 @@ import { Markdown } from "tiptap-markdown"
 // --- AI / Edit Mode ---
 import { EditorContextMenu } from "@/components/EditorContextMenu"
 import { EditInstructionPopup } from "@/components/EditInstructionPopup"
-import { editWithAI } from "@/lib/ai"
+import { sendAIEdit, startAISidecar, stopAISidecar, clearAIContext, onSessionReady } from "@/lib/ai"
 import { AIStatusBar } from "@/components/AIStatusBar"
 import { AIHighlight, addAIHighlight, clearAIHighlights } from "@/components/tiptap-extension/ai-highlight-extension"
 
 // --- Sidebar ---
 import { Sidebar } from "@/components/Sidebar"
 import { PanelLeft as PanelLeftIcon } from "lucide-react"
+import { WelcomeScreen } from "@/components/WelcomeScreen"
 
 // --- Styles ---
 import "@/components/tiptap-templates/simple/simple-editor.scss"
@@ -211,7 +212,7 @@ const MobileToolbarContent = ({
 export function SimpleEditor() {
   const isMobile = useIsBreakpoint()
   const { height } = useWindowSize()
-  const { content, setContent, setSavedContent, currentFilePath, setCurrentFilePath, isDirty, setDirty, setShowSettings, fontSize, lineHeight, lineWidth, paragraphSpacing, paragraphIndent, autoSave, requestedFilePath, setRequestedFilePath, sidebarOpen, setSidebarOpen, setWorkspacePath, claudePath, workspacePath, aiSessionId, setAISessionId, isAIProcessing, setAIProcessing, setAIError, setAIEditStatus, setAIEditNewStrings, appendAIEditNewString } = useStore()
+  const { content, setContent, setSavedContent, currentFilePath, setCurrentFilePath, isDirty, setDirty, setShowSettings, fontSize, lineHeight, lineWidth, paragraphSpacing, paragraphIndent, autoSave, requestedFilePath, setRequestedFilePath, sidebarOpen, setSidebarOpen, setWorkspacePath, isAIProcessing, setAIProcessing, setAIError, setAIEditStatus, setAIEditNewStrings, appendAIEditNewString, setAISessionState } = useStore()
   const [mobileView, setMobileView] = useState<"main" | "highlighter" | "link">(
     "main"
   )
@@ -225,6 +226,8 @@ export function SimpleEditor() {
   const [editInputPos, setEditInputPos] = useState({ top: 0, left: 0 })
   const [editHasSelection, setEditHasSelection] = useState(false)
   const [editSelectionRange, setEditSelectionRange] = useState<{ from: number; to: number } | null>(null)
+
+  const hasDocument = currentFilePath !== null || content !== ""
 
   const editor = useEditor({
     immediatelyRender: false,
@@ -351,27 +354,27 @@ export function SimpleEditor() {
         }
       }
 
-      const result = await editWithAI({
+      const result = await sendAIEdit({
         markdownContent: markdown,
         instruction,
         selectionLineStart,
         selectionLineEnd,
         selectedText,
-        claudePath,
-        workspacePath,
-        sessionId: aiSessionId,
       })
 
-      // Apply the edited content back to the editor
-      if (result.content !== markdown) {
-        // Snapshot old doc text before replacing
+      if (result.type === "error") {
+        throw new Error(result.message || "AI edit failed")
+      }
+
+      const editedContent = result.content || markdown
+
+      if (editedContent !== markdown) {
         const oldText = editor.state.doc.textBetween(0, editor.state.doc.content.size, "\n")
 
-        editor.commands.setContent(result.content)
+        editor.commands.setContent(editedContent)
         const serialized = (editor.storage as any).markdown.getMarkdown()
         setContent(serialized)
 
-        // Find changed region by comparing old vs new doc text
         const newText = editor.state.doc.textBetween(0, editor.state.doc.content.size, "\n")
         let diffStart = 0
         while (diffStart < oldText.length && diffStart < newText.length && oldText[diffStart] === newText[diffStart]) {
@@ -385,7 +388,6 @@ export function SimpleEditor() {
         }
 
         if (newEnd > diffStart) {
-          // Convert text offset to ProseMirror position
           let textOffset = 0
           let pmFrom = -1
           let pmTo = -1
@@ -403,7 +405,6 @@ export function SimpleEditor() {
               }
               textOffset += node.text!.length
             } else if (node.isBlock && pos > 0) {
-              // Block boundaries produce the "\n" separator in textBetween
               textOffset += 1
               if (pmFrom === -1 && textOffset > diffStart) {
                 pmFrom = pos
@@ -417,17 +418,11 @@ export function SimpleEditor() {
           }
         }
 
-        // Clear highlights after 3 seconds
         setTimeout(() => {
           if (editor && !editor.isDestroyed) {
             clearAIHighlights(editor)
           }
         }, 3000)
-      }
-
-      // Store session ID for continuity
-      if (result.session_id) {
-        setAISessionId(result.session_id)
       }
 
       setEditSelectionRange(null)
@@ -438,7 +433,7 @@ export function SimpleEditor() {
       setAIEditStatus(null)
       setAIEditNewStrings([])
     }
-  }, [editor, editSelectionRange, claudePath, workspacePath, aiSessionId, setAIProcessing, setAIError, setAIEditStatus, setAIEditNewStrings, setContent, setAISessionId])
+  }, [editor, editSelectionRange, setAIProcessing, setAIError, setAIEditStatus, setAIEditNewStrings, setContent])
 
   const handleNewFile = useCallback(() => {
     const newContent = "# New Document\n\nStart typing..."
@@ -450,8 +445,8 @@ export function SimpleEditor() {
     }
     setCurrentFilePath(null)
     setDirty(false)
-    setAISessionId(null)
-  }, [editor, setContent, setSavedContent, setCurrentFilePath, setDirty, setAISessionId])
+    clearAIContext().catch(() => {})
+  }, [editor, setContent, setSavedContent, setCurrentFilePath, setDirty])
 
   const loadFileIntoEditor = useCallback((filePath: string, fileContent: string) => {
     if (!editor) return
@@ -462,8 +457,8 @@ export function SimpleEditor() {
     setContent(serialized)
     setCurrentFilePath(filePath)
     setDirty(false)
-    setAISessionId(null)
-  }, [editor, setContent, setSavedContent, setCurrentFilePath, setDirty, setAISessionId])
+    clearAIContext().catch(() => {})
+  }, [editor, setContent, setSavedContent, setCurrentFilePath, setDirty])
 
   const handleOpenFile = useCallback(async () => {
     const result = await openFile()
@@ -499,17 +494,15 @@ export function SimpleEditor() {
   }, [editor, content, setSavedContent, setCurrentFilePath, setDirty])
 
   const handleCloseFile = useCallback(() => {
-    const welcomeContent = "# Welcome\n\nStart typing your markdown here..."
     if (editor) {
-      editor.commands.setContent(welcomeContent)
-      const serialized = (editor.storage as any).markdown.getMarkdown()
-      setSavedContent(serialized)
-      setContent(serialized)
+      editor.commands.setContent("")
+      setSavedContent("")
+      setContent("")
     }
     setCurrentFilePath(null)
     setDirty(false)
-    setAISessionId(null)
-  }, [editor, setContent, setSavedContent, setCurrentFilePath, setDirty, setAISessionId])
+    clearAIContext().catch(() => {})
+  }, [editor, setContent, setSavedContent, setCurrentFilePath, setDirty])
 
   const handleToggleDarkMode = useCallback(() => {
     document.documentElement.classList.toggle("dark")
@@ -582,6 +575,22 @@ export function SimpleEditor() {
     })
     return () => { unlisten.then(fn => fn()) }
   }, [appendAIEditNewString])
+
+  // Start/stop AI sidecar with component lifecycle
+  useEffect(() => {
+    startAISidecar().catch(err => console.error("Failed to start AI sidecar:", err))
+    return () => { stopAISidecar().catch(() => {}) }
+  }, [])
+
+  // Listen for AI session ready event
+  useEffect(() => {
+    const unlistenReady = onSessionReady(() => {
+      setAISessionState("ready")
+    })
+    return () => {
+      unlistenReady.then(fn => fn())
+    }
+  }, [setAISessionState])
 
   // Update window title based on file state
   useEffect(() => {
@@ -664,6 +673,18 @@ export function SimpleEditor() {
     root.style.setProperty("--ms-paragraph-spacing", `${paragraphSpacing}em`)
     root.style.setProperty("--ms-paragraph-indent", `${paragraphIndent}em`)
   }, [fontSize, lineHeight, lineWidth, paragraphSpacing, paragraphIndent])
+
+  if (!hasDocument) {
+    return (
+      <div className="simple-editor-wrapper">
+        <WelcomeScreen
+          onNewFile={handleNewFile}
+          onOpenFile={handleOpenFile}
+          onOpenFolder={handleOpenFolder}
+        />
+      </div>
+    )
+  }
 
   return (
     <div className="simple-editor-wrapper">

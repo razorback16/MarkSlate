@@ -1,348 +1,421 @@
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
+use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 use tauri::{Emitter, Manager};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::Mutex;
+
+static APP_START: OnceLock<Instant> = OnceLock::new();
+
+fn ts() -> String {
+    let elapsed = APP_START.get_or_init(Instant::now).elapsed().as_secs_f64();
+    format!("{:.1}s", elapsed)
+}
+
+macro_rules! tlog {
+    ($($arg:tt)*) => {
+        eprintln!("[markslate @{}] {}", ts(), format!($($arg)*))
+    };
+}
+
+struct SidecarProcess {
+    stdin: tokio::process::ChildStdin,
+    child: tokio::process::Child,
+}
+
+struct AISidecarState(Arc<Mutex<Option<SidecarProcess>>>);
 
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
-#[cfg(unix)]
-fn is_executable(path: &std::path::Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .map(|m| m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-/// Build a PATH string that includes common locations for the `claude` CLI.
-/// macOS .app bundles don't inherit the user's shell PATH, so we need to
-/// explicitly include directories like ~/.local/bin, ~/.nvm/*, homebrew paths, etc.
-fn build_extended_path() -> String {
+/// Search common locations for a Node.js binary.
+fn find_node_binary() -> Result<String, String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/default".to_string());
-    let current_path = std::env::var("PATH").unwrap_or_default();
 
-    let extra_dirs = [
-        format!("{}/.local/bin", home),
-        "/usr/local/bin".to_string(),
-        "/opt/homebrew/bin".to_string(),
-        "/opt/homebrew/sbin".to_string(),
-        format!("{}/bin", home),
-        "/usr/local/lib/node_modules/.bin".to_string(),
-        format!("{}/.npm-global/bin", home),
-        format!("{}/.volta/bin", home),
-        format!("{}/.bun/bin", home),
-        format!("{}/.cargo/bin", home),
-        format!("{}/.nvm/versions/node/default/bin", home),
+    let candidates = [
+        "/usr/local/bin/node".to_string(),
+        "/opt/homebrew/bin/node".to_string(),
+        format!("{}/.volta/bin/node", home),
+        format!("{}/.bun/bin/node", home),
+        format!("{}/.local/bin/node", home),
+        format!("{}/.nvm/default/bin/node", home),
     ];
 
-    let mut parts: Vec<&str> = extra_dirs.iter().map(|s| s.as_str()).collect();
-    if !current_path.is_empty() {
-        parts.push(&current_path);
+    for candidate in &candidates {
+        let p = std::path::Path::new(candidate);
+        if p.exists() {
+            return Ok(candidate.clone());
+        }
     }
-    parts.join(":")
-}
 
-#[tauri::command]
-async fn detect_claude_path() -> Result<String, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
-
-    // Candidate directories to search for the claude binary
-    let mut candidate_dirs: Vec<String> = vec![
-        format!("{}/.local/bin", home),
-        "/usr/local/bin".to_string(),
-        "/opt/homebrew/bin".to_string(),
-        "/opt/homebrew/sbin".to_string(),
-        format!("{}/bin", home),
-        "/usr/local/lib/node_modules/.bin".to_string(),
-        format!("{}/.npm-global/bin", home),
-        format!("{}/.volta/bin", home),
-        format!("{}/.bun/bin", home),
-        format!("{}/.cargo/bin", home),
-    ];
-
-    // Glob ~/.nvm/versions/node/*/bin to find any node version directories
+    // Glob nvm versions
     let nvm_base = format!("{}/.nvm/versions/node", home);
     if let Ok(entries) = std::fs::read_dir(&nvm_base) {
         for entry in entries.flatten() {
-            let bin_dir = entry.path().join("bin");
-            if bin_dir.is_dir() {
-                if let Some(s) = bin_dir.to_str() {
-                    candidate_dirs.push(s.to_string());
+            let bin = entry.path().join("bin/node");
+            if bin.exists() {
+                if let Some(s) = bin.to_str() {
+                    return Ok(s.to_string());
                 }
             }
         }
     }
 
-    // Direct scan: check each candidate directory for claude binary
-    for dir in &candidate_dirs {
-        let candidate = std::path::PathBuf::from(dir).join("claude");
-        if candidate.exists() && is_executable(&candidate) {
-            if let Some(path_str) = candidate.to_str() {
-                eprintln!("[markslate] detect_claude_path: found claude at {}", path_str);
-                return Ok(path_str.to_string());
-            }
+    // Fallback: `which node`
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let extra = format!(
+        "/usr/local/bin:/opt/homebrew/bin:{}/.volta/bin:{}/.bun/bin:{}/.nvm/versions/node/default/bin:{}",
+        home, home, home, current_path
+    );
+    let output = std::process::Command::new("which")
+        .arg("node")
+        .env("PATH", &extra)
+        .output()
+        .map_err(|e| format!("Failed to run `which node`: {}", e))?;
+
+    if output.status.success() {
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !path.is_empty() {
+            return Ok(path);
         }
     }
 
-    eprintln!("[markslate] detect_claude_path: direct scan failed, falling back to `which claude`");
+    Err("Node.js not found. AI features require Node.js 18+.".to_string())
+}
 
-    // Fallback: run `which claude` with extended PATH
-    let extended_path = build_extended_path();
-    let output = Command::new("which")
+/// Search common locations for the Claude CLI binary.
+fn find_claude_binary() -> Result<String, String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/default".to_string());
+
+    let candidates = [
+        format!("{}/.claude/local/claude", home),
+        format!("{}/.local/bin/claude", home),
+        "/usr/local/bin/claude".to_string(),
+        "/opt/homebrew/bin/claude".to_string(),
+    ];
+
+    for candidate in &candidates {
+        let p = std::path::Path::new(candidate);
+        if p.exists() {
+            return Ok(candidate.clone());
+        }
+    }
+
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let extra = format!(
+        "{}/.claude/local:{}/.local/bin:/usr/local/bin:/opt/homebrew/bin:{}",
+        home, home, current_path
+    );
+    let output = std::process::Command::new("which")
         .arg("claude")
-        .env("PATH", &extended_path)
+        .env("PATH", &extra)
         .output()
         .map_err(|e| format!("Failed to run `which claude`: {}", e))?;
 
     if output.status.success() {
         let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !path.is_empty() {
-            eprintln!("[markslate] detect_claude_path: `which` found claude at {}", path);
             return Ok(path);
         }
     }
 
-    Err(
-        "Could not find the Claude CLI. Please install it (https://docs.anthropic.com/en/docs/claude-code) \
-         or set the path manually in Settings."
-            .to_string(),
-    )
+    Err("Claude CLI not found. AI features require Claude Code to be installed.".to_string())
 }
 
-#[tauri::command]
-async fn validate_claude_path(path: String) -> Result<bool, String> {
-    let p = std::path::PathBuf::from(&path);
-    Ok(p.exists() && is_executable(&p))
+/// Resolve the sidecar script path.
+fn resolve_sidecar_path(app: &tauri::AppHandle) -> Result<String, String> {
+    let dev_path = std::env::current_dir()
+        .map_err(|e| format!("Cannot get CWD: {}", e))?
+        .parent()
+        .map(|p| p.join("src-sidecar").join("ai-sidecar.mjs"))
+        .unwrap_or_default();
+
+    if dev_path.exists() {
+        tlog!("Using dev sidecar path: {}", dev_path.display());
+        return dev_path
+            .to_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Invalid sidecar path".to_string());
+    }
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let bundled = resource_dir.join("sidecar").join("ai-sidecar.mjs");
+        tlog!("Checking bundled sidecar path: {}", bundled.display());
+        if bundled.exists() {
+            return bundled
+                .to_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| "Invalid sidecar path".to_string());
+        }
+    }
+
+    let alt_path = std::path::PathBuf::from("../src-sidecar/ai-sidecar.mjs");
+    if alt_path.exists() {
+        return std::fs::canonicalize(&alt_path)
+            .map_err(|e| format!("Cannot canonicalize: {}", e))?
+            .to_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Invalid sidecar path".to_string());
+    }
+
+    Err("Could not find ai-sidecar.mjs. Ensure src-sidecar/ exists.".to_string())
 }
 
-#[derive(serde::Serialize)]
-struct EditResult {
-    content: String,
-    session_id: Option<String>,
-}
-
-#[tauri::command]
-async fn edit_with_ai(
+async fn spawn_sidecar(
     app: tauri::AppHandle,
-    markdown_content: String,
-    instruction: String,
-    selection_line_start: Option<u32>,
-    selection_line_end: Option<u32>,
-    selected_text: Option<String>,
-    claude_path: Option<String>,
-    workspace_path: Option<String>,
-    session_id: Option<String>,
-) -> Result<EditResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let temp_dir = std::env::temp_dir().join("markslate-ai");
-        std::fs::create_dir_all(&temp_dir)
-            .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+    state: Arc<Mutex<Option<SidecarProcess>>>,
+) -> Result<(), String> {
+    let node_path = find_node_binary()?;
+    let sidecar_path = resolve_sidecar_path(&app)?;
 
-        let temp_file = temp_dir.join("current-document.md");
-        std::fs::write(&temp_file, &markdown_content)
-            .map_err(|e| format!("Failed to write temp file: {}", e))?;
+    tlog!("Spawning sidecar: {} {}", node_path, sidecar_path);
 
-        let temp_file_str = temp_file.to_string_lossy().to_string();
+    let mut child = tokio::process::Command::new(&node_path)
+        .arg(&sidecar_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
 
-        // Build prompt with selection context
-        let selection_context = match (&selected_text, selection_line_start, selection_line_end) {
-            (Some(text), Some(start), Some(end)) => format!(
-                "\n\nThe user has selected the following text (lines {}-{}):\n---\n{}\n---",
-                start, end, text
-            ),
-            (Some(text), _, _) => format!(
-                "\n\nThe user has selected the following text:\n---\n{}\n---",
-                text
-            ),
-            _ => String::new(),
-        };
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to capture sidecar stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture sidecar stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to capture sidecar stderr".to_string())?;
 
-        let prompt = format!(
-            "The markdown file is at: {}\n\n\
-             First, Read the file to see its contents. Then use the Edit tool to modify it. \
-             Do NOT output the edited text — use the Edit tool to make changes in place.{}\n\n\
-             Instruction: {}",
-            temp_file_str, selection_context, instruction
-        );
-
-
-
-        // Write empty MCP config file for --strict-mcp-config
-        let mcp_config_file = temp_dir.join("empty-mcp.json");
-        if !mcp_config_file.exists() {
-            let _ = std::fs::write(&mcp_config_file, r#"{"mcpServers":{}}"#);
-        }
-        let mcp_config_path = mcp_config_file.to_string_lossy().to_string();
-
-        // Build CLI args — use stream-json for real-time progress
-        // Stripped to bare minimum: no MCP, no skills, no hooks, no project context
-        let mut args: Vec<String> = vec![
-            "-p".to_string(),
-            "--model".to_string(),
-            "claude-sonnet-4-5-20250929".to_string(),
-            "--output-format".to_string(),
-            "stream-json".to_string(),
-            "--verbose".to_string(), // required by stream-json
-            "--allowedTools".to_string(),
-            "Edit,Read".to_string(),
-            "--tools".to_string(),
-            "Edit,Read".to_string(),
-            "--disable-slash-commands".to_string(),
-            "--strict-mcp-config".to_string(),
-            "--mcp-config".to_string(),
-            mcp_config_path,
-            "--no-chrome".to_string(),
-            "--setting-sources".to_string(),
-            String::new(),
-        ];
-
-        if let Some(ref sid) = session_id {
-            args.push("--resume".to_string());
-            args.push(sid.clone());
-            // Cannot change system prompt on resume
-        } else {
-            args.push("--system-prompt".to_string());
-            args.push(
-                "You are a markdown editor. First Read the file, then use the Edit tool to modify it. Do not output explanations — just read and edit.".to_string()
-            );
-        }
-
-        // Always use temp_dir as working directory to avoid loading CLAUDE.md from project tree
-        let _ = workspace_path; // kept in API signature for frontend compat
-        let work_dir = temp_dir.clone();
-
-        let extended_path = build_extended_path();
-
-        // Resolve claude command
-        let cmd = match &claude_path {
-            Some(p) if !p.is_empty() => p.clone(),
-            _ => "claude".to_string(),
-        };
-
-        let mut child = Command::new(&cmd)
-            .args(&args)
-            .current_dir(&work_dir)
-            .env("PATH", &extended_path)
-            .env_remove("CLAUDECODE")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                let msg = if e.kind() == std::io::ErrorKind::NotFound {
-                    format!(
-                        "Claude CLI not found in PATH. Searched: {}. Please install Claude Code: https://docs.anthropic.com/en/docs/claude-code",
-                        extended_path
-                    )
-                } else {
-                    format!("Failed to spawn claude process: {}", e)
-                };
-                msg
-            })?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(prompt.as_bytes())
-                .map_err(|e| format!("Failed to write to claude stdin: {}", e))?;
-        }
-
-        // Stream stdout line-by-line and emit progress events
-        let stdout = child.stdout.take()
-            .ok_or_else(|| "Failed to capture claude stdout".to_string())?;
+    // Relay stdout JSON lines as Tauri events
+    let app_clone = app.clone();
+    tokio::spawn(async move {
         let reader = BufReader::new(stdout);
-
-        let mut result_session_id: Option<String> = None;
-
-        for line in reader.lines() {
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => continue,
-            };
-
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
             if line.trim().is_empty() {
                 continue;
             }
-
             let parsed: serde_json::Value = match serde_json::from_str(&line) {
                 Ok(v) => v,
-                Err(_) => continue,
+                Err(_) => {
+                    tlog!("stdout non-JSON: {}", line);
+                    continue;
+                }
             };
 
-            let event_type = parsed.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            let event_type = parsed
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("");
 
             match event_type {
-                "assistant" => {
-                    // Check what the assistant is doing
-                    if let Some(content) = parsed.pointer("/message/content") {
-                        if let Some(arr) = content.as_array() {
-                            for item in arr {
-                                let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                                match item_type {
-                                    "tool_use" => {
-                                        let tool_name = item.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
-                                        let status = match tool_name {
-                                            "Edit" => "Editing document...".to_string(),
-                                            "Read" => "Reading document...".to_string(),
-                                            "Glob" => "Exploring files...".to_string(),
-                                            _ => format!("Using {}...", tool_name),
-                                        };
-                                        let _ = app.emit("ai-progress", &status);
-                                    }
-                                    "text" => {
-                                        let _ = app.emit("ai-progress", "Thinking...");
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
+                "status" => {
+                    if let Some(msg) = parsed.get("message").and_then(|m| m.as_str()) {
+                        tlog!("-> ai-progress: {}", msg);
+                        let _ = app_clone.emit("ai-progress", msg);
                     }
                 }
-                "result" => {
-                    result_session_id = parsed.get("session_id")
-                        .and_then(|s| s.as_str())
-                        .map(|s| s.to_string());
-                    let _ = app.emit("ai-progress", "Done");
-                }
-                "user" => {
-                    if let Some(new_str) = parsed.pointer("/tool_use_result/newString").and_then(|s| s.as_str()) {
-                        if !new_str.is_empty() {
-                            let _ = app.emit("ai-edit-applied", new_str);
-                        }
+                "edit_applied" => {
+                    tlog!("-> ai-edit-applied");
+                    if let Some(new_str) = parsed.get("newString").and_then(|s| s.as_str()) {
+                        let _ = app_clone.emit("ai-edit-applied", new_str);
                     }
                 }
-                _ => {}
+                "result" | "error" => {
+                    tlog!("-> ai-sidecar-response (type={})", event_type);
+                    let _ = app_clone.emit("ai-sidecar-response", line.as_str());
+                }
+                "pong" => {
+                    tlog!("Pong received");
+                }
+                "init_ok" => {
+                    tlog!("Sidecar init acknowledged");
+                }
+                "session_ready" => {
+                    tlog!("AI session ready");
+                    let _ = app_clone.emit("ai-session-ready", "");
+                }
+                "context_cleared" => {
+                    tlog!("AI context cleared");
+                    let _ = app_clone.emit("ai-context-cleared", "");
+                }
+                _ => {
+                    tlog!("Unknown sidecar event: {}", event_type);
+                }
             }
         }
+        tlog!("Sidecar stdout EOF — process likely exited");
+    });
 
-        // Wait for process to finish
-        let status = child.wait()
-            .map_err(|e| format!("Failed to wait for claude process: {}", e))?;
-
-        if !status.success() {
-            return Err("Claude exited with error".to_string());
+    // Log stderr
+    tokio::spawn(async move {
+        let reader = BufReader::new(stderr);
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            eprintln!("[sidecar-err @{}] {}", ts(), line);
         }
+    });
 
-        // Read back the edited file
-        let content = std::fs::read_to_string(&temp_file)
-            .map_err(|e| format!("Failed to read back edited file: {}", e))?;
+    let mut guard = state.lock().await;
+    *guard = Some(SidecarProcess { stdin, child });
 
-        // Clean up
-        let _ = std::fs::remove_file(&temp_file);
+    // Send init command with claude binary path
+    if let Some(ref mut sidecar) = *guard {
+        match find_claude_binary() {
+            Ok(claude_path) => {
+                let init_cmd = serde_json::json!({
+                    "command": "init",
+                    "claudePath": claude_path,
+                });
+                let init_line = format!("{}\n", init_cmd.to_string());
+                if let Err(e) = sidecar.stdin.write_all(init_line.as_bytes()).await {
+                    tlog!("Failed to send init command: {}", e);
+                }
+                if let Err(e) = sidecar.stdin.flush().await {
+                    tlog!("Failed to flush init command: {}", e);
+                }
+                tlog!("Sent init with claude path: {}", claude_path);
+            }
+            Err(e) => {
+                tlog!("Warning: Claude CLI not found ({}), sidecar will use bundled CLI", e);
+            }
+        }
+    }
 
+    tlog!("AI sidecar started successfully");
+    Ok(())
+}
 
+#[tauri::command]
+async fn start_ai_sidecar(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AISidecarState>,
+) -> Result<(), String> {
+    let state_arc = state.0.clone();
 
-        Ok(EditResult {
-            content,
-            session_id: result_session_id,
-        })
-    })
-    .await
-    .map_err(|e| format!("Task failed: {}", e))?
+    {
+        let guard = state_arc.lock().await;
+        if guard.is_some() {
+            tlog!("Sidecar already running");
+            return Ok(());
+        }
+    }
+
+    spawn_sidecar(app, state_arc).await
+}
+
+#[tauri::command]
+async fn send_ai_edit(
+    state: tauri::State<'_, AISidecarState>,
+    markdown_content: String,
+    instruction: String,
+    selected_text: Option<String>,
+    selection_line_start: Option<u32>,
+    selection_line_end: Option<u32>,
+) -> Result<(), String> {
+    tlog!("send_ai_edit: instruction='{}', doc_len={}, selection={:?}",
+        &instruction[..instruction.len().min(60)],
+        markdown_content.len(),
+        selected_text.as_ref().map(|s| s.len()));
+
+    let mut guard = state.0.lock().await;
+    let sidecar = guard
+        .as_mut()
+        .ok_or_else(|| "AI sidecar not running. Restart the app or check Node.js installation.".to_string())?;
+
+    let cmd = serde_json::json!({
+        "command": "edit",
+        "markdownContent": markdown_content,
+        "instruction": instruction,
+        "selectedText": selected_text,
+        "selectionLineStart": selection_line_start,
+        "selectionLineEnd": selection_line_end,
+    });
+
+    let line = format!("{}\n", cmd.to_string());
+    tlog!("Writing {} bytes to sidecar stdin", line.len());
+    sidecar
+        .stdin
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|e| format!("Failed to write to sidecar: {}", e))?;
+    sidecar
+        .stdin
+        .flush()
+        .await
+        .map_err(|e| format!("Failed to flush sidecar stdin: {}", e))?;
+    tlog!("Edit command sent to sidecar");
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn cancel_ai_edit(state: tauri::State<'_, AISidecarState>) -> Result<(), String> {
+    tlog!("cancel_ai_edit");
+    let mut guard = state.0.lock().await;
+    if let Some(sidecar) = guard.as_mut() {
+        let line = "{\"command\":\"cancel\"}\n";
+        sidecar
+            .stdin
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| format!("Failed to send cancel: {}", e))?;
+        sidecar
+            .stdin
+            .flush()
+            .await
+            .map_err(|e| format!("Failed to flush: {}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_ai_sidecar(state: tauri::State<'_, AISidecarState>) -> Result<(), String> {
+    tlog!("stop_ai_sidecar");
+    let mut guard = state.0.lock().await;
+    if let Some(mut sidecar) = guard.take() {
+        drop(sidecar.stdin);
+        let _ = sidecar.child.kill().await;
+        tlog!("AI sidecar stopped");
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn clear_ai_context(state: tauri::State<'_, AISidecarState>) -> Result<(), String> {
+    tlog!("clear_ai_context");
+    let mut guard = state.0.lock().await;
+    let sidecar = guard
+        .as_mut()
+        .ok_or_else(|| "AI sidecar not running.".to_string())?;
+
+    let cmd = serde_json::json!({ "command": "clear_context" });
+    let line = format!("{}\n", cmd.to_string());
+    sidecar
+        .stdin
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|e| format!("Failed to write to sidecar: {}", e))?;
+    sidecar
+        .stdin
+        .flush()
+        .await
+        .map_err(|e| format!("Failed to flush sidecar stdin: {}", e))?;
+
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    APP_START.get_or_init(Instant::now);
+    tlog!("App starting");
+
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
         .expect("failed to load icon");
 
@@ -350,11 +423,31 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .invoke_handler(tauri::generate_handler![greet, edit_with_ai, detect_claude_path, validate_claude_path])
+        .manage(AISidecarState(Arc::new(Mutex::new(None))))
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            start_ai_sidecar,
+            send_ai_edit,
+            cancel_ai_edit,
+            stop_ai_sidecar,
+            clear_ai_context
+        ])
         .setup(move |app| {
             if let Some(window) = app.webview_windows().values().next() {
                 let _ = window.set_icon(icon);
             }
+
+            let app_handle = app.handle().clone();
+            let state = app
+                .state::<AISidecarState>()
+                .0
+                .clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = spawn_sidecar(app_handle, state).await {
+                    tlog!("Failed to auto-start sidecar: {}", e);
+                }
+            });
+
             Ok(())
         })
         .run(tauri::generate_context!())

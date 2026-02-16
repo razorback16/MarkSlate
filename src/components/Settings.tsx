@@ -1,6 +1,3 @@
-import { useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
-import { detectClaudePath, validateClaudePath } from "../lib/ai";
 import { useStore } from "../lib/store";
 
 function SliderRow({
@@ -66,56 +63,7 @@ export function Settings() {
     paragraphIndent, setParagraphIndent,
     autoSave, setAutoSave,
     resetEditorDefaults,
-    claudePath, setClaudePath,
   } = useStore();
-
-  const [pathInput, setPathInput] = useState(claudePath || "");
-  const [pathStatus, setPathStatus] = useState<"idle" | "valid" | "invalid" | "detecting">(
-    claudePath ? "valid" : "idle"
-  );
-
-  const handleBrowse = async () => {
-    const selected = await open({ multiple: false });
-    if (selected) {
-      const filePath = typeof selected === "string" ? selected : String(selected);
-      setPathInput(filePath);
-      const valid = await validateClaudePath(filePath);
-      if (valid) {
-        setClaudePath(filePath);
-        setPathStatus("valid");
-      } else {
-        setPathStatus("invalid");
-      }
-    }
-  };
-
-  const handleAutoDetect = async () => {
-    setPathStatus("detecting");
-    try {
-      const detected = await detectClaudePath();
-      setPathInput(detected);
-      setClaudePath(detected);
-      setPathStatus("valid");
-    } catch {
-      setPathStatus("invalid");
-    }
-  };
-
-  const handlePathChange = async (value: string) => {
-    setPathInput(value);
-    if (!value.trim()) {
-      setClaudePath(null);
-      setPathStatus("idle");
-      return;
-    }
-    const valid = await validateClaudePath(value);
-    if (valid) {
-      setClaudePath(value);
-      setPathStatus("valid");
-    } else {
-      setPathStatus("invalid");
-    }
-  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
@@ -166,56 +114,6 @@ export function Settings() {
               </button>
             </div>
           </div>
-
-          <hr className="border-gray-100 dark:border-[var(--tt-gray-dark-200)]" />
-
-          {/* Claude CLI Section */}
-          <div>
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-[var(--tt-gray-dark-400)] mb-3">
-              Claude CLI
-            </h3>
-            <div className="space-y-2">
-              <input
-                type="text"
-                value={pathInput}
-                onChange={(e) => handlePathChange(e.target.value)}
-                placeholder="Path to claude binary..."
-                className="w-full text-[13px] border border-gray-200 dark:border-[var(--tt-gray-dark-300)] dark:bg-[var(--tt-gray-dark-100)] dark:text-[var(--tt-gray-dark-900)] dark:placeholder-[var(--tt-gray-dark-400)] rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400 transition-shadow font-mono text-[12px]"
-              />
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handleBrowse}
-                  className="text-[12px] px-3 py-1 rounded-md bg-gray-100 hover:bg-gray-200 dark:bg-[var(--tt-gray-dark-200)] dark:hover:bg-[var(--tt-gray-dark-300)] text-gray-600 dark:text-[var(--tt-gray-dark-600)] transition-colors"
-                >
-                  Browse
-                </button>
-                <button
-                  onClick={handleAutoDetect}
-                  disabled={pathStatus === "detecting"}
-                  className="text-[12px] px-3 py-1 rounded-md bg-gray-100 hover:bg-gray-200 dark:bg-[var(--tt-gray-dark-200)] dark:hover:bg-[var(--tt-gray-dark-300)] text-gray-600 dark:text-[var(--tt-gray-dark-600)] transition-colors disabled:opacity-50"
-                >
-                  {pathStatus === "detecting" ? "Detecting..." : "Auto-detect"}
-                </button>
-                {pathStatus === "valid" && (
-                  <span className="text-[11px] text-green-500 flex items-center gap-1">
-                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
-                    Found
-                  </span>
-                )}
-                {pathStatus === "invalid" && (
-                  <span className="text-[11px] text-red-500 flex items-center gap-1">
-                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                    Not found
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-
         </div>
       </div>
     </div>

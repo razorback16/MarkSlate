@@ -35,10 +35,8 @@ interface EditorStore {
   setAIProcessing: (processing: boolean) => void;
   aiError: string | null;
   setAIError: (error: string | null) => void;
-  claudePath: string | null;
-  setClaudePath: (path: string | null) => void;
-  showClaudeNotFound: boolean;
-  setShowClaudeNotFound: (show: boolean) => void;
+  aiSidecarReady: boolean;
+  setAISidecarReady: (ready: boolean) => void;
   showSettings: boolean;
   setShowSettings: (show: boolean) => void;
   fontSize: number;
@@ -59,8 +57,8 @@ interface EditorStore {
   setSidebarOpen: (open: boolean) => void;
   requestedFilePath: string | null;
   setRequestedFilePath: (path: string | null) => void;
-  aiSessionId: string | null;
-  setAISessionId: (id: string | null) => void;
+  aiSessionState: "idle" | "ready" | "editing" | "error";
+  setAISessionState: (state: "idle" | "ready" | "editing" | "error") => void;
   aiEditStatus: string | null;
   setAIEditStatus: (status: string | null) => void;
   aiEditNewStrings: string[];
@@ -87,8 +85,8 @@ export const useStore = create<EditorStore>((set, get) => {
   };
 
   return {
-    content: "# Welcome\n\nStart typing your markdown here...",
-    savedContent: "# Welcome\n\nStart typing your markdown here...",
+    content: "",
+    savedContent: "",
     setContent: (content) => set({ content, isDirty: content !== get().savedContent }),
     setSavedContent: (savedContent) => set({ savedContent }),
     currentFilePath: null,
@@ -99,17 +97,8 @@ export const useStore = create<EditorStore>((set, get) => {
     setAIProcessing: (isAIProcessing) => set({ isAIProcessing }),
     aiError: null,
     setAIError: (aiError) => set({ aiError }),
-    claudePath: (() => { try { return localStorage.getItem("markslate-claude-path"); } catch { return null; } })(),
-    setClaudePath: (claudePath) => {
-      set({ claudePath });
-      if (claudePath) {
-        localStorage.setItem("markslate-claude-path", claudePath);
-      } else {
-        localStorage.removeItem("markslate-claude-path");
-      }
-    },
-    showClaudeNotFound: false,
-    setShowClaudeNotFound: (showClaudeNotFound) => set({ showClaudeNotFound }),
+    aiSidecarReady: false,
+    setAISidecarReady: (aiSidecarReady) => set({ aiSidecarReady }),
     showSettings: false,
     setShowSettings: (showSettings) => set({ showSettings }),
     fontSize: initialSettings.fontSize,
@@ -158,8 +147,8 @@ export const useStore = create<EditorStore>((set, get) => {
     },
     requestedFilePath: null,
     setRequestedFilePath: (requestedFilePath) => set({ requestedFilePath }),
-    aiSessionId: null,
-    setAISessionId: (aiSessionId) => set({ aiSessionId }),
+    aiSessionState: "idle",
+    setAISessionState: (aiSessionState) => set({ aiSessionState }),
     aiEditStatus: null,
     setAIEditStatus: (aiEditStatus) => set({ aiEditStatus }),
     aiEditNewStrings: [],
