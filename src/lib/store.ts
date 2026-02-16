@@ -63,6 +63,9 @@ interface EditorStore {
   setAISessionId: (id: string | null) => void;
   aiEditStatus: string | null;
   setAIEditStatus: (status: string | null) => void;
+  aiEditNewStrings: string[];
+  setAIEditNewStrings: (strings: string[]) => void;
+  appendAIEditNewString: (s: string) => void;
   resetEditorDefaults: () => void;
 }
 
@@ -159,6 +162,9 @@ export const useStore = create<EditorStore>((set, get) => {
     setAISessionId: (aiSessionId) => set({ aiSessionId }),
     aiEditStatus: null,
     setAIEditStatus: (aiEditStatus) => set({ aiEditStatus }),
+    aiEditNewStrings: [],
+    setAIEditNewStrings: (aiEditNewStrings) => set({ aiEditNewStrings }),
+    appendAIEditNewString: (s) => set((state) => ({ aiEditNewStrings: [...state.aiEditNewStrings, s] })),
     resetEditorDefaults: () => {
       set({ ...EDITOR_DEFAULTS });
       saveEditorSettings({ ...EDITOR_DEFAULTS });

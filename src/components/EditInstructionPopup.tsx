@@ -12,7 +12,7 @@ export function EditInstructionPopup({ position, hasSelection, onSubmit, onClose
   const [instruction, setInstruction] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
-  const { isAIProcessing, aiError, aiEditStatus } = useStore();
+  const { isAIProcessing, aiError } = useStore();
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -81,22 +81,11 @@ export function EditInstructionPopup({ position, hasSelection, onSubmit, onClose
             disabled={isAIProcessing || !instruction.trim()}
             className="absolute right-1.5 bottom-[12px] p-1 rounded-md text-gray-300 hover:text-blue-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            {isAIProcessing ? (
-              <svg className="animate-spin h-4 w-4 text-blue-500" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-            ) : (
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
-              </svg>
-            )}
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+            </svg>
           </button>
         </div>
-
-        {aiEditStatus && isAIProcessing && (
-          <p className="mt-2 text-[12px] text-gray-500 dark:text-[var(--tt-gray-dark-500)]">{aiEditStatus}</p>
-        )}
 
         {aiError && (
           <p className="mt-2 text-[12px] text-red-500 dark:text-red-400">{aiError}</p>

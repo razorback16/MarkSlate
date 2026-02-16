@@ -283,13 +283,7 @@ async fn edit_with_ai(
                                         let tool_name = item.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
                                         let status = match tool_name {
                                             "Edit" => "Editing document...".to_string(),
-                                            "Read" => {
-                                                let path = item.pointer("/input/file_path")
-                                                    .and_then(|p| p.as_str())
-                                                    .unwrap_or("file");
-                                                let filename = path.rsplit('/').next().unwrap_or(path);
-                                                format!("Reading {}...", filename)
-                                            }
+                                            "Read" => "Reading document...".to_string(),
                                             "Glob" => "Exploring files...".to_string(),
                                             _ => format!("Using {}...", tool_name),
                                         };
@@ -309,6 +303,13 @@ async fn edit_with_ai(
                         .and_then(|s| s.as_str())
                         .map(|s| s.to_string());
                     let _ = app.emit("ai-progress", "Done");
+                }
+                "user" => {
+                    if let Some(new_str) = parsed.pointer("/tool_use_result/newString").and_then(|s| s.as_str()) {
+                        if !new_str.is_empty() {
+                            let _ = app.emit("ai-edit-applied", new_str);
+                        }
+                    }
                 }
                 _ => {}
             }

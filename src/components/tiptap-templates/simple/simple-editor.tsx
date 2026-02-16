@@ -82,6 +82,8 @@ import { Markdown } from "tiptap-markdown"
 import { EditorContextMenu } from "@/components/EditorContextMenu"
 import { EditInstructionPopup } from "@/components/EditInstructionPopup"
 import { editWithAI } from "@/lib/ai"
+import { AIStatusBar } from "@/components/AIStatusBar"
+import { AIHighlight, addAIHighlight, clearAIHighlights } from "@/components/tiptap-extension/ai-highlight-extension"
 
 // --- Sidebar ---
 import { Sidebar } from "@/components/Sidebar"
@@ -209,7 +211,7 @@ const MobileToolbarContent = ({
 export function SimpleEditor() {
   const isMobile = useIsBreakpoint()
   const { height } = useWindowSize()
-  const { content, setContent, setSavedContent, currentFilePath, setCurrentFilePath, isDirty, setDirty, setShowSettings, fontSize, lineHeight, lineWidth, paragraphSpacing, paragraphIndent, autoSave, requestedFilePath, setRequestedFilePath, sidebarOpen, setSidebarOpen, setWorkspacePath, claudePath, workspacePath, aiSessionId, setAISessionId, isAIProcessing, setAIProcessing, setAIError, setAIEditStatus } = useStore()
+  const { content, setContent, setSavedContent, currentFilePath, setCurrentFilePath, isDirty, setDirty, setShowSettings, fontSize, lineHeight, lineWidth, paragraphSpacing, paragraphIndent, autoSave, requestedFilePath, setRequestedFilePath, sidebarOpen, setSidebarOpen, setWorkspacePath, claudePath, workspacePath, aiSessionId, setAISessionId, isAIProcessing, setAIProcessing, setAIError, setAIEditStatus, setAIEditNewStrings, appendAIEditNewString } = useStore()
   const [mobileView, setMobileView] = useState<"main" | "highlighter" | "link">(
     "main"
   )
@@ -258,6 +260,7 @@ export function SimpleEditor() {
       Superscript,
       Subscript,
       Selection,
+      AIHighlight,
       Table.configure({ resizable: true }),
       TableRow,
       TableHeader,
@@ -313,9 +316,12 @@ export function SimpleEditor() {
   const handleEditSubmit = useCallback(async (instruction: string) => {
     if (!editor) return
 
+    // Close popup immediately
+    setShowEditInput(false)
     setAIProcessing(true)
     setAIError(null)
     setAIEditStatus("Starting...")
+    setAIEditNewStrings([])
 
     try {
       // Get full markdown
@@ -358,9 +364,65 @@ export function SimpleEditor() {
 
       // Apply the edited content back to the editor
       if (result.content !== markdown) {
+        // Snapshot old doc text before replacing
+        const oldText = editor.state.doc.textBetween(0, editor.state.doc.content.size, "\n")
+
         editor.commands.setContent(result.content)
         const serialized = (editor.storage as any).markdown.getMarkdown()
         setContent(serialized)
+
+        // Find changed region by comparing old vs new doc text
+        const newText = editor.state.doc.textBetween(0, editor.state.doc.content.size, "\n")
+        let diffStart = 0
+        while (diffStart < oldText.length && diffStart < newText.length && oldText[diffStart] === newText[diffStart]) {
+          diffStart++
+        }
+        let oldEnd = oldText.length
+        let newEnd = newText.length
+        while (oldEnd > diffStart && newEnd > diffStart && oldText[oldEnd - 1] === newText[newEnd - 1]) {
+          oldEnd--
+          newEnd--
+        }
+
+        if (newEnd > diffStart) {
+          // Convert text offset to ProseMirror position
+          let textOffset = 0
+          let pmFrom = -1
+          let pmTo = -1
+          editor.state.doc.descendants((node: any, pos: number) => {
+            if (pmTo !== -1) return false
+            if (node.isText) {
+              const nodeStart = textOffset
+              const nodeEnd = textOffset + node.text!.length
+              if (pmFrom === -1 && nodeEnd > diffStart) {
+                pmFrom = pos + (diffStart - nodeStart)
+              }
+              if (pmFrom !== -1 && nodeEnd >= newEnd) {
+                pmTo = pos + (newEnd - nodeStart)
+                return false
+              }
+              textOffset += node.text!.length
+            } else if (node.isBlock && pos > 0) {
+              // Block boundaries produce the "\n" separator in textBetween
+              textOffset += 1
+              if (pmFrom === -1 && textOffset > diffStart) {
+                pmFrom = pos
+              }
+            }
+            return true
+          })
+
+          if (pmFrom !== -1 && pmTo !== -1 && pmTo > pmFrom) {
+            addAIHighlight(editor, pmFrom, pmTo)
+          }
+        }
+
+        // Clear highlights after 3 seconds
+        setTimeout(() => {
+          if (editor && !editor.isDestroyed) {
+            clearAIHighlights(editor)
+          }
+        }, 3000)
       }
 
       // Store session ID for continuity
@@ -368,15 +430,15 @@ export function SimpleEditor() {
         setAISessionId(result.session_id)
       }
 
-      setShowEditInput(false)
       setEditSelectionRange(null)
     } catch (err) {
       setAIError(err instanceof Error ? err.message : "AI edit failed")
     } finally {
       setAIProcessing(false)
       setAIEditStatus(null)
+      setAIEditNewStrings([])
     }
-  }, [editor, editSelectionRange, claudePath, workspacePath, aiSessionId, setAIProcessing, setAIError, setAIEditStatus, setContent, setAISessionId])
+  }, [editor, editSelectionRange, claudePath, workspacePath, aiSessionId, setAIProcessing, setAIError, setAIEditStatus, setAIEditNewStrings, setContent, setAISessionId])
 
   const handleNewFile = useCallback(() => {
     const newContent = "# New Document\n\nStart typing..."
@@ -513,6 +575,14 @@ export function SimpleEditor() {
     return () => { unlisten.then(fn => fn()) }
   }, [setAIEditStatus])
 
+  // Listen for AI edit applied events from Rust backend
+  useEffect(() => {
+    const unlisten = listen<string>("ai-edit-applied", (event) => {
+      appendAIEditNewString(event.payload)
+    })
+    return () => { unlisten.then(fn => fn()) }
+  }, [appendAIEditNewString])
+
   // Update window title based on file state
   useEffect(() => {
     const filename = currentFilePath ? currentFilePath.split("/").pop() : "Untitled"
@@ -647,13 +717,13 @@ export function SimpleEditor() {
             hasSelection={editHasSelection}
             onSubmit={handleEditSubmit}
             onClose={() => {
-              if (!isAIProcessing) {
-                setShowEditInput(false)
-                setEditSelectionRange(null)
-              }
+              setShowEditInput(false)
+              setEditSelectionRange(null)
             }}
           />
         )}
+
+        {isAIProcessing && <AIStatusBar />}
       </div>
     </div>
   )
