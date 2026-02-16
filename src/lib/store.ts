@@ -59,6 +59,10 @@ interface EditorStore {
   setSidebarOpen: (open: boolean) => void;
   requestedFilePath: string | null;
   setRequestedFilePath: (path: string | null) => void;
+  aiSessionId: string | null;
+  setAISessionId: (id: string | null) => void;
+  aiEditStatus: string | null;
+  setAIEditStatus: (status: string | null) => void;
   resetEditorDefaults: () => void;
 }
 
@@ -151,6 +155,10 @@ export const useStore = create<EditorStore>((set, get) => {
     },
     requestedFilePath: null,
     setRequestedFilePath: (requestedFilePath) => set({ requestedFilePath }),
+    aiSessionId: null,
+    setAISessionId: (aiSessionId) => set({ aiSessionId }),
+    aiEditStatus: null,
+    setAIEditStatus: (aiEditStatus) => set({ aiEditStatus }),
     resetEditorDefaults: () => {
       set({ ...EDITOR_DEFAULTS });
       saveEditorSettings({ ...EDITOR_DEFAULTS });

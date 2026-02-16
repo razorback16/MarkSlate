@@ -1,21 +1,38 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export async function modifyTextWithAI({
-  selectedText,
+export interface EditResult {
+  content: string;
+  session_id: string | null;
+}
+
+export async function editWithAI({
+  markdownContent,
   instruction,
-  fullContext,
+  selectionLineStart,
+  selectionLineEnd,
+  selectedText,
   claudePath,
+  workspacePath,
+  sessionId,
 }: {
-  selectedText: string;
+  markdownContent: string;
   instruction: string;
-  fullContext: string;
+  selectionLineStart?: number | null;
+  selectionLineEnd?: number | null;
+  selectedText?: string | null;
   claudePath?: string | null;
-}): Promise<string> {
-  return await invoke<string>("modify_text_with_ai", {
-    selectedText,
+  workspacePath?: string | null;
+  sessionId?: string | null;
+}): Promise<EditResult> {
+  return await invoke<EditResult>("edit_with_ai", {
+    markdownContent,
     instruction,
-    fullContext,
+    selectionLineStart: selectionLineStart ?? null,
+    selectionLineEnd: selectionLineEnd ?? null,
+    selectedText: selectedText ?? null,
     claudePath: claudePath || null,
+    workspacePath: workspacePath || null,
+    sessionId: sessionId ?? null,
   });
 }
 

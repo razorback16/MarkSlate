@@ -1,20 +1,18 @@
 import { useState, useRef, useEffect } from "react";
 import { useStore } from "../lib/store";
-import { modifyTextWithAI } from "../lib/ai";
 
-interface AIPopupProps {
+interface EditInstructionPopupProps {
   position: { top: number; left: number };
-  selectedText: string;
-  fullContext: string;
-  onComplete: (modifiedText: string) => void;
+  hasSelection: boolean;
+  onSubmit: (instruction: string) => void;
   onClose: () => void;
 }
 
-export function AIPopup({ position, selectedText, fullContext, onComplete, onClose }: AIPopupProps) {
+export function EditInstructionPopup({ position, hasSelection, onSubmit, onClose }: EditInstructionPopupProps) {
   const [instruction, setInstruction] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
-  const { isAIProcessing, setAIProcessing, aiError, setAIError, claudePath } = useStore();
+  const { isAIProcessing, aiError, aiEditStatus } = useStore();
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -22,31 +20,15 @@ export function AIPopup({ position, selectedText, fullContext, onComplete, onClo
 
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !isAIProcessing) onClose();
     };
     document.addEventListener("keydown", handleEscape);
     return () => document.removeEventListener("keydown", handleEscape);
-  }, [onClose]);
+  }, [onClose, isAIProcessing]);
 
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
     if (!instruction.trim() || isAIProcessing) return;
-
-    setAIProcessing(true);
-    setAIError(null);
-
-    try {
-      const result = await modifyTextWithAI({
-        selectedText,
-        instruction: instruction.trim(),
-        fullContext,
-        claudePath,
-      });
-      onComplete(result);
-    } catch (err) {
-      setAIError(err instanceof Error ? err.message : "AI request failed");
-    } finally {
-      setAIProcessing(false);
-    }
+    onSubmit(instruction.trim());
   };
 
   return (
@@ -58,11 +40,12 @@ export function AIPopup({ position, selectedText, fullContext, onComplete, onClo
       {/* Header */}
       <div className="flex items-center justify-between px-3.5 pt-3 pb-1.5">
         <h3 className="text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-[var(--tt-gray-dark-400)]">
-          AI Edit
+          {hasSelection ? "Edit Selection" : "Edit Document"}
         </h3>
         <button
           onClick={onClose}
-          className="text-gray-400 hover:text-gray-600 dark:text-[var(--tt-gray-dark-400)] dark:hover:text-[var(--tt-gray-dark-700)] transition-colors p-0.5 -mr-0.5"
+          disabled={isAIProcessing}
+          className="text-gray-400 hover:text-gray-600 dark:text-[var(--tt-gray-dark-400)] dark:hover:text-[var(--tt-gray-dark-700)] transition-colors p-0.5 -mr-0.5 disabled:opacity-50"
         >
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -110,6 +93,10 @@ export function AIPopup({ position, selectedText, fullContext, onComplete, onClo
             )}
           </button>
         </div>
+
+        {aiEditStatus && isAIProcessing && (
+          <p className="mt-2 text-[12px] text-gray-500 dark:text-[var(--tt-gray-dark-500)]">{aiEditStatus}</p>
+        )}
 
         {aiError && (
           <p className="mt-2 text-[12px] text-red-500 dark:text-red-400">{aiError}</p>

@@ -72,13 +72,16 @@ import { useStore } from "@/lib/store"
 import { openFile, saveFile, saveFileAs, openFileByPath } from "@/lib/file-ops"
 import { setupNativeMenu, type MenuHandlers } from "@/lib/native-menu"
 import { getCurrentWindow } from "@tauri-apps/api/window"
+import { listen } from "@tauri-apps/api/event"
 import { ask, open } from "@tauri-apps/plugin-dialog"
 
 // --- Markdown ---
 import { Markdown } from "tiptap-markdown"
 
-// --- AI Popup ---
-import { AIPopup } from "@/components/AIPopup"
+// --- AI / Edit Mode ---
+import { EditorContextMenu } from "@/components/EditorContextMenu"
+import { EditInstructionPopup } from "@/components/EditInstructionPopup"
+import { editWithAI } from "@/lib/ai"
 
 // --- Sidebar ---
 import { Sidebar } from "@/components/Sidebar"
@@ -206,16 +209,20 @@ const MobileToolbarContent = ({
 export function SimpleEditor() {
   const isMobile = useIsBreakpoint()
   const { height } = useWindowSize()
-  const { content, setContent, setSavedContent, currentFilePath, setCurrentFilePath, isDirty, setDirty, setShowSettings, fontSize, lineHeight, lineWidth, paragraphSpacing, paragraphIndent, autoSave, requestedFilePath, setRequestedFilePath, sidebarOpen, setSidebarOpen, setWorkspacePath } = useStore()
+  const { content, setContent, setSavedContent, currentFilePath, setCurrentFilePath, isDirty, setDirty, setShowSettings, fontSize, lineHeight, lineWidth, paragraphSpacing, paragraphIndent, autoSave, requestedFilePath, setRequestedFilePath, sidebarOpen, setSidebarOpen, setWorkspacePath, claudePath, workspacePath, aiSessionId, setAISessionId, isAIProcessing, setAIProcessing, setAIError, setAIEditStatus } = useStore()
   const [mobileView, setMobileView] = useState<"main" | "highlighter" | "link">(
     "main"
   )
   const toolbarRef = useRef<HTMLDivElement>(null)
 
   const fileLoadingRef = useRef(false)
-  const [showAIPopup, setShowAIPopup] = useState(false)
-  const [selectionRange, setSelectionRange] = useState<{ from: number; to: number } | null>(null)
-  const [popupPosition, setPopupPosition] = useState<{ top: number; left: number }>({ top: 0, left: 0 })
+  const [showContextMenu, setShowContextMenu] = useState(false)
+  const [contextMenuPos, setContextMenuPos] = useState({ x: 0, y: 0 })
+  const [contextMenuHasSelection, setContextMenuHasSelection] = useState(false)
+  const [showEditInput, setShowEditInput] = useState(false)
+  const [editInputPos, setEditInputPos] = useState({ top: 0, left: 0 })
+  const [editHasSelection, setEditHasSelection] = useState(false)
+  const [editSelectionRange, setEditSelectionRange] = useState<{ from: number; to: number } | null>(null)
 
   const editor = useEditor({
     immediatelyRender: false,
@@ -275,38 +282,101 @@ export function SimpleEditor() {
     overlayHeight: toolbarRef.current?.getBoundingClientRect().height ?? 0,
   })
 
-  const openAIPopup = useCallback(() => {
+  const handleContextMenu = useCallback((event: MouseEvent) => {
+    event.preventDefault()
     if (!editor) return
     const { from, to } = editor.state.selection
-    if (from === to) return
-    const coords = editor.view.coordsAtPos(from)
-    setSelectionRange({ from, to })
-    setPopupPosition({ top: coords.top - 60, left: coords.left })
-    setShowAIPopup(true)
+    const hasSelection = from !== to
+    setContextMenuHasSelection(hasSelection)
+    setContextMenuPos({ x: event.clientX, y: event.clientY })
+    setShowContextMenu(true)
   }, [editor])
 
-  const handleAIComplete = useCallback(
-    (modifiedText: string) => {
-      if (!editor || !selectionRange) return
-      const { from, to } = selectionRange
-      editor.chain().focus().setTextSelection({ from, to }).deleteSelection().insertContent(modifiedText).run()
-      setShowAIPopup(false)
-      setSelectionRange(null)
-    },
-    [editor, selectionRange]
-  )
-
-  const getSelectedText = useCallback(() => {
-    if (!editor || !selectionRange) return ""
-    const { from, to } = selectionRange
-    return editor.state.doc.textBetween(from, to, "\n")
-  }, [editor, selectionRange])
-
-  const getFullContext = useCallback(() => {
-    if (!editor) return ""
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (editor.storage as any).markdown.getMarkdown()
+  const handleEditRequest = useCallback(() => {
+    if (!editor) return
+    setShowContextMenu(false)
+    const { from, to } = editor.state.selection
+    const hasSelection = from !== to
+    setEditHasSelection(hasSelection)
+    if (hasSelection) {
+      setEditSelectionRange({ from, to })
+      const coords = editor.view.coordsAtPos(from)
+      setEditInputPos({ top: coords.top - 60, left: coords.left })
+    } else {
+      setEditSelectionRange(null)
+      // Center the popup
+      setEditInputPos({ top: window.innerHeight / 3, left: window.innerWidth / 2 - 160 })
+    }
+    setShowEditInput(true)
   }, [editor])
+
+  const handleEditSubmit = useCallback(async (instruction: string) => {
+    if (!editor) return
+
+    setAIProcessing(true)
+    setAIError(null)
+    setAIEditStatus("Starting...")
+
+    try {
+      // Get full markdown
+      const markdown = (editor.storage as any).markdown.getMarkdown()
+
+      // Extract selected text and calculate line numbers from the markdown
+      let selectionLineStart: number | null = null
+      let selectionLineEnd: number | null = null
+      let selectedText: string | null = null
+
+      if (editSelectionRange) {
+        const { from, to } = editSelectionRange
+        // Get the selected text from ProseMirror
+        const prosemirrorSelected = editor.state.doc.textBetween(from, to, "\n")
+
+        // Find the selected text in the exported markdown to get correct line numbers
+        const matchIndex = markdown.indexOf(prosemirrorSelected)
+        if (matchIndex !== -1) {
+          const beforeMatch = markdown.substring(0, matchIndex)
+          const startLine = beforeMatch.split("\n").length
+          selectionLineStart = startLine
+          selectionLineEnd = startLine + prosemirrorSelected.split("\n").length - 1
+          selectedText = prosemirrorSelected
+        } else {
+          // Fallback: send the text without line numbers
+          selectedText = prosemirrorSelected
+        }
+      }
+
+      const result = await editWithAI({
+        markdownContent: markdown,
+        instruction,
+        selectionLineStart,
+        selectionLineEnd,
+        selectedText,
+        claudePath,
+        workspacePath,
+        sessionId: aiSessionId,
+      })
+
+      // Apply the edited content back to the editor
+      if (result.content !== markdown) {
+        editor.commands.setContent(result.content)
+        const serialized = (editor.storage as any).markdown.getMarkdown()
+        setContent(serialized)
+      }
+
+      // Store session ID for continuity
+      if (result.session_id) {
+        setAISessionId(result.session_id)
+      }
+
+      setShowEditInput(false)
+      setEditSelectionRange(null)
+    } catch (err) {
+      setAIError(err instanceof Error ? err.message : "AI edit failed")
+    } finally {
+      setAIProcessing(false)
+      setAIEditStatus(null)
+    }
+  }, [editor, editSelectionRange, claudePath, workspacePath, aiSessionId, setAIProcessing, setAIError, setAIEditStatus, setContent, setAISessionId])
 
   const handleNewFile = useCallback(() => {
     const newContent = "# New Document\n\nStart typing..."
@@ -318,7 +388,8 @@ export function SimpleEditor() {
     }
     setCurrentFilePath(null)
     setDirty(false)
-  }, [editor, setContent, setSavedContent, setCurrentFilePath, setDirty])
+    setAISessionId(null)
+  }, [editor, setContent, setSavedContent, setCurrentFilePath, setDirty, setAISessionId])
 
   const loadFileIntoEditor = useCallback((filePath: string, fileContent: string) => {
     if (!editor) return
@@ -329,7 +400,8 @@ export function SimpleEditor() {
     setContent(serialized)
     setCurrentFilePath(filePath)
     setDirty(false)
-  }, [editor, setContent, setSavedContent, setCurrentFilePath, setDirty])
+    setAISessionId(null)
+  }, [editor, setContent, setSavedContent, setCurrentFilePath, setDirty, setAISessionId])
 
   const handleOpenFile = useCallback(async () => {
     const result = await openFile()
@@ -374,7 +446,8 @@ export function SimpleEditor() {
     }
     setCurrentFilePath(null)
     setDirty(false)
-  }, [editor, setContent, setSavedContent, setCurrentFilePath, setDirty])
+    setAISessionId(null)
+  }, [editor, setContent, setSavedContent, setCurrentFilePath, setDirty, setAISessionId])
 
   const handleToggleDarkMode = useCallback(() => {
     document.documentElement.classList.toggle("dark")
@@ -432,6 +505,14 @@ export function SimpleEditor() {
     })
   }, [])
 
+  // Listen for AI progress events from Rust backend
+  useEffect(() => {
+    const unlisten = listen<string>("ai-progress", (event) => {
+      setAIEditStatus(event.payload)
+    })
+    return () => { unlisten.then(fn => fn()) }
+  }, [setAIEditStatus])
+
   // Update window title based on file state
   useEffect(() => {
     const filename = currentFilePath ? currentFilePath.split("/").pop() : "Untitled"
@@ -484,13 +565,20 @@ export function SimpleEditor() {
     const handleKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key === "k") {
         event.preventDefault()
-        openAIPopup()
+        handleEditRequest()
       }
     }
     const dom = editor.view.dom
     dom.addEventListener("keydown", handleKeyDown)
     return () => dom.removeEventListener("keydown", handleKeyDown)
-  }, [editor, openAIPopup])
+  }, [editor, handleEditRequest])
+
+  useEffect(() => {
+    if (!editor) return
+    const dom = editor.view.dom
+    dom.addEventListener("contextmenu", handleContextMenu)
+    return () => dom.removeEventListener("contextmenu", handleContextMenu)
+  }, [editor, handleContextMenu])
 
   useEffect(() => {
     if (!isMobile && mobileView !== "main") {
@@ -544,15 +632,25 @@ export function SimpleEditor() {
           />
         </EditorContext.Provider>
 
-        {showAIPopup && selectionRange && (
-          <AIPopup
-            position={popupPosition}
-            selectedText={getSelectedText()}
-            fullContext={getFullContext()}
-            onComplete={handleAIComplete}
+        {showContextMenu && (
+          <EditorContextMenu
+            position={contextMenuPos}
+            hasSelection={contextMenuHasSelection}
+            onEdit={handleEditRequest}
+            onClose={() => setShowContextMenu(false)}
+          />
+        )}
+
+        {showEditInput && (
+          <EditInstructionPopup
+            position={editInputPos}
+            hasSelection={editHasSelection}
+            onSubmit={handleEditSubmit}
             onClose={() => {
-              setShowAIPopup(false)
-              setSelectionRange(null)
+              if (!isAIProcessing) {
+                setShowEditInput(false)
+                setEditSelectionRange(null)
+              }
             }}
           />
         )}

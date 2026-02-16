@@ -1,6 +1,6 @@
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -116,50 +116,113 @@ async fn validate_claude_path(path: String) -> Result<bool, String> {
     Ok(p.exists() && is_executable(&p))
 }
 
+#[derive(serde::Serialize)]
+struct EditResult {
+    content: String,
+    session_id: Option<String>,
+}
+
 #[tauri::command]
-async fn modify_text_with_ai(
-    selected_text: String,
+async fn edit_with_ai(
+    app: tauri::AppHandle,
+    markdown_content: String,
     instruction: String,
-    full_context: String,
+    selection_line_start: Option<u32>,
+    selection_line_end: Option<u32>,
+    selected_text: Option<String>,
     claude_path: Option<String>,
-) -> Result<String, String> {
-    let prompt = format!(
-        "You are editing a markdown document. Here is the full document for context:\n\n\
-         ---\n{}\n---\n\n\
-         The user has selected the following text:\n\n\
-         ---\n{}\n---\n\n\
-         Instruction: {}\n\n\
-         Return ONLY the modified replacement text. No explanations, no code blocks.",
-        full_context, selected_text, instruction
-    );
-
-    let system_prompt = "You are a markdown editing assistant. You receive selected text from a document and an instruction. Return ONLY the modified text that should replace the selection. No explanations, no markdown code fences, no extra formatting.";
-
+    workspace_path: Option<String>,
+    session_id: Option<String>,
+) -> Result<EditResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let extended_path = build_extended_path();
-        eprintln!("[markslate] AI request starting, PATH: {}", extended_path);
+        let temp_dir = std::env::temp_dir().join("markslate-ai");
+        std::fs::create_dir_all(&temp_dir)
+            .map_err(|e| format!("Failed to create temp dir: {}", e))?;
 
-        // Use provided claude_path if non-empty, otherwise default to "claude"
+        let temp_file = temp_dir.join("current-document.md");
+        std::fs::write(&temp_file, &markdown_content)
+            .map_err(|e| format!("Failed to write temp file: {}", e))?;
+
+        let temp_file_str = temp_file.to_string_lossy().to_string();
+
+        // Build prompt with selection context
+        let selection_context = match (&selected_text, selection_line_start, selection_line_end) {
+            (Some(text), Some(start), Some(end)) => format!(
+                "\n\nThe user has selected the following text (lines {}-{}):\n---\n{}\n---",
+                start, end, text
+            ),
+            (Some(text), _, _) => format!(
+                "\n\nThe user has selected the following text:\n---\n{}\n---",
+                text
+            ),
+            _ => String::new(),
+        };
+
+        let prompt = format!(
+            "The markdown file is at: {}\n\n\
+             First, Read the file to see its contents. Then use the Edit tool to modify it. \
+             Do NOT output the edited text — use the Edit tool to make changes in place.{}\n\n\
+             Instruction: {}",
+            temp_file_str, selection_context, instruction
+        );
+
+
+
+        // Write empty MCP config file for --strict-mcp-config
+        let mcp_config_file = temp_dir.join("empty-mcp.json");
+        if !mcp_config_file.exists() {
+            let _ = std::fs::write(&mcp_config_file, r#"{"mcpServers":{}}"#);
+        }
+        let mcp_config_path = mcp_config_file.to_string_lossy().to_string();
+
+        // Build CLI args — use stream-json for real-time progress
+        // Stripped to bare minimum: no MCP, no skills, no hooks, no project context
+        let mut args: Vec<String> = vec![
+            "-p".to_string(),
+            "--model".to_string(),
+            "claude-sonnet-4-5-20250929".to_string(),
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+            "--verbose".to_string(), // required by stream-json
+            "--allowedTools".to_string(),
+            "Edit,Read".to_string(),
+            "--tools".to_string(),
+            "Edit,Read".to_string(),
+            "--disable-slash-commands".to_string(),
+            "--strict-mcp-config".to_string(),
+            "--mcp-config".to_string(),
+            mcp_config_path,
+            "--no-chrome".to_string(),
+            "--setting-sources".to_string(),
+            String::new(),
+        ];
+
+        if let Some(ref sid) = session_id {
+            args.push("--resume".to_string());
+            args.push(sid.clone());
+            // Cannot change system prompt on resume
+        } else {
+            args.push("--system-prompt".to_string());
+            args.push(
+                "You are a markdown editor. First Read the file, then use the Edit tool to modify it. Do not output explanations — just read and edit.".to_string()
+            );
+        }
+
+        // Always use temp_dir as working directory to avoid loading CLAUDE.md from project tree
+        let _ = workspace_path; // kept in API signature for frontend compat
+        let work_dir = temp_dir.clone();
+
+        let extended_path = build_extended_path();
+
+        // Resolve claude command
         let cmd = match &claude_path {
-            Some(p) if !p.is_empty() => {
-                eprintln!("[markslate] Using custom claude path: {}", p);
-                p.clone()
-            }
-            _ => {
-                eprintln!("[markslate] Using default claude command from PATH");
-                "claude".to_string()
-            }
+            Some(p) if !p.is_empty() => p.clone(),
+            _ => "claude".to_string(),
         };
 
         let mut child = Command::new(&cmd)
-            .args([
-                "-p",
-                "--model",
-                "claude-sonnet-4-5-20250929",
-                "--system-prompt",
-                system_prompt,
-                "--no-session-persistence",
-            ])
+            .args(&args)
+            .current_dir(&work_dir)
             .env("PATH", &extended_path)
             .env_remove("CLAUDECODE")
             .stdin(Stdio::piped())
@@ -175,7 +238,6 @@ async fn modify_text_with_ai(
                 } else {
                     format!("Failed to spawn claude process: {}", e)
                 };
-                eprintln!("[markslate] {}", msg);
                 msg
             })?;
 
@@ -185,33 +247,94 @@ async fn modify_text_with_ai(
                 .map_err(|e| format!("Failed to write to claude stdin: {}", e))?;
         }
 
-        let output = child
-            .wait_with_output()
-            .map_err(|e| format!("Failed to read claude output: {}", e))?;
+        // Stream stdout line-by-line and emit progress events
+        let stdout = child.stdout.take()
+            .ok_or_else(|| "Failed to capture claude stdout".to_string())?;
+        let reader = BufReader::new(stdout);
 
-        eprintln!(
-            "[markslate] claude exited with status: {}, stdout len: {}, stderr len: {}",
-            output.status,
-            output.stdout.len(),
-            output.stderr.len()
-        );
+        let mut result_session_id: Option<String> = None;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let msg = format!("Claude exited with error: {}", stderr);
-            eprintln!("[markslate] {}", msg);
-            return Err(msg);
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => continue,
+            };
+
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            let parsed: serde_json::Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            let event_type = parsed.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+            match event_type {
+                "assistant" => {
+                    // Check what the assistant is doing
+                    if let Some(content) = parsed.pointer("/message/content") {
+                        if let Some(arr) = content.as_array() {
+                            for item in arr {
+                                let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                                match item_type {
+                                    "tool_use" => {
+                                        let tool_name = item.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+                                        let status = match tool_name {
+                                            "Edit" => "Editing document...".to_string(),
+                                            "Read" => {
+                                                let path = item.pointer("/input/file_path")
+                                                    .and_then(|p| p.as_str())
+                                                    .unwrap_or("file");
+                                                let filename = path.rsplit('/').next().unwrap_or(path);
+                                                format!("Reading {}...", filename)
+                                            }
+                                            "Glob" => "Exploring files...".to_string(),
+                                            _ => format!("Using {}...", tool_name),
+                                        };
+                                        let _ = app.emit("ai-progress", &status);
+                                    }
+                                    "text" => {
+                                        let _ = app.emit("ai-progress", "Thinking...");
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+                "result" => {
+                    result_session_id = parsed.get("session_id")
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_string());
+                    let _ = app.emit("ai-progress", "Done");
+                }
+                _ => {}
+            }
         }
 
-        let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        // Wait for process to finish
+        let status = child.wait()
+            .map_err(|e| format!("Failed to wait for claude process: {}", e))?;
 
-        if result.is_empty() {
-            eprintln!("[markslate] Claude returned empty output");
-            return Err("Claude returned empty output".to_string());
+        if !status.success() {
+            return Err("Claude exited with error".to_string());
         }
 
-        eprintln!("[markslate] AI request completed successfully ({} bytes)", result.len());
-        Ok(result)
+        // Read back the edited file
+        let content = std::fs::read_to_string(&temp_file)
+            .map_err(|e| format!("Failed to read back edited file: {}", e))?;
+
+        // Clean up
+        let _ = std::fs::remove_file(&temp_file);
+
+
+
+        Ok(EditResult {
+            content,
+            session_id: result_session_id,
+        })
     })
     .await
     .map_err(|e| format!("Task failed: {}", e))?
@@ -226,7 +349,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .invoke_handler(tauri::generate_handler![greet, modify_text_with_ai, detect_claude_path, validate_claude_path])
+        .invoke_handler(tauri::generate_handler![greet, edit_with_ai, detect_claude_path, validate_claude_path])
         .setup(move |app| {
             if let Some(window) = app.webview_windows().values().next() {
                 let _ = window.set_icon(icon);
